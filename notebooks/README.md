@@ -1,0 +1,1 @@
+Eğitim .ipynb dosyaları

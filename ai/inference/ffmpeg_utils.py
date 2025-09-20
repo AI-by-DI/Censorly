@@ -1,0 +1,6 @@
+"""
+FFmpeg yardımcıları: kare çıkarma, segment atlama, blur filtreleri.
+Uygulama seviyesi: pipeline'lar burayı kullanır.
+"""
+# def extract_frames(...): ...
+# def apply_blur_segments(...): ...
