@@ -1,4 +1,5 @@
-version: "3.9"
+# version satırını istersen kaldırabilirsin (artık gereksiz uyarı veriyor)
+# version: "3.9"
 
 services:
   db:
@@ -23,6 +24,11 @@ services:
     ports: ["6379:6379"]
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   minio:
     image: minio/minio:latest
@@ -32,19 +38,75 @@ services:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio12345
     ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # MinIO Console
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # MinIO Console
     volumes:
       - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   pgadmin:
     image: dpage/pgadmin4
     container_name: censorly_pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@censorly.local
+      PGADMIN_DEFAULT_EMAIL: admin@censorly.com
       PGADMIN_DEFAULT_PASSWORD: admin
     ports: ["5050:80"]
-    depends_on: [db]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    container_name: censorly_api
+    env_file:
+      - ../.env
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../apps/api:/app/api
+    command: >
+      uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/web.Dockerfile
+    container_name: censorly_web
+    depends_on:
+      - api
+    ports:
+      - "5173:5173"
+    volumes:
+      - ../apps/web:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker.Dockerfile
+    container_name: censorly_worker
+    env_file:
+      - ../.env
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
+    volumes:
+      - ../apps/worker:/app/worker
+    working_dir: /app/worker
+    command: ["python", "main.py"]
+    restart: on-failure
 
 volumes:
   pgdata:
