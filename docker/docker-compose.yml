@@ -1,37 +1,52 @@
 version: "3.9"
+
 services:
-  api:
-    build:
-      context: ../
-      dockerfile: docker/api.Dockerfile
-    env_file:
-      - ../configs/api.env.sample
-    ports:
-      - "8000:8000"
+  db:
+    image: postgres:16-alpine
+    container_name: censorly_db
+    environment:
+      POSTGRES_USER: censorly
+      POSTGRES_PASSWORD: censorly
+      POSTGRES_DB: censorly
+    ports: ["5432:5432"]
     volumes:
-      - ../:/app
-  worker:
-    build:
-      context: ../
-      dockerfile: docker/worker.Dockerfile
-    env_file:
-      - ../configs/worker.env.sample
-    depends_on:
-      - api
-  web:
-    build:
-      context: ../
-      dockerfile: docker/web.Dockerfile
-    ports:
-      - "5173:5173"
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U censorly"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: censorly_redis
+    ports: ["6379:6379"]
     volumes:
-      - ../:/app
-  # redis ve db servisleri demo için yorumda bırakıldı
-  # redis:
-  #   image: redis:7-alpine
-  #   ports: ["6379:6379"]
-  # db:
-  #   image: postgres:16-alpine
-  #   environment:
-  #     POSTGRES_PASSWORD: password
-  #   ports: ["5432:5432"]
+      - redisdata:/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: censorly_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # MinIO Console
+    volumes:
+      - miniodata:/data
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: censorly_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@censorly.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports: ["5050:80"]
+    depends_on: [db]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
