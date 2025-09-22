@@ -20,3 +20,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Video dosyalarını yükleme
+*.mp4
+*.avi
+*.mov
+*.mkv
