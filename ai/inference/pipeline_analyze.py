@@ -20,32 +20,41 @@ def download_from_minio(bucket: str, key: str, local_path: str, endpoint: str, a
     client = Minio(endpoint, access_key=access, secret_key=secret, secure=secure)
     client.fget_object(bucket, key, local_path)
 
+# pipeline_analyze.py (ilgili kısım)
 def build_detectors(conf: float, iou: float, imgsz: int = 640):
     mapping = {
         "alcohol":  MODELS_DIR / "alcohol_best.pt",
         "blood":    MODELS_DIR / "blood_best.pt",
         "violence": MODELS_DIR / "violence_best.pt",
-        "phobic":   MODELS_DIR / "phobic.pt",
+        "phobic":   MODELS_DIR / "phobic_best.pt",
         "obscene":  MODELS_DIR / "nudenet_640m.pt",
     }
-    EXCLUDE_FOR_OBSCENE = {"FACE_FEMALE", "FACE_MALE"}  # <- senin isteğin
+
+    conf_by_label = {
+        "violence": 0.4,
+        "blood": 0.75,
+        # diğerleri conf (default)
+    }
 
     detectors = []
     for label, path in mapping.items():
-        if path.exists():
-            if label == "obscene":
-                detectors.append(
-                    YOLODetector(label, str(path), conf=conf, iou=iou, imgsz=imgsz,
-                                exclude_labels=EXCLUDE_FOR_OBSCENE)
-                )
-            else:
-                detectors.append(
-                    YOLODetector(label, str(path), conf=conf, iou=iou, imgsz=imgsz)
-                )
+        if not path.exists():
+            continue
+        this_conf = conf_by_label.get(label, conf)
+        if label == "obscene":
+            detectors.append(
+                YOLODetector(label, str(path), conf=this_conf, iou=iou, imgsz=imgsz,
+                             exclude_labels={"FACE_FEMALE", "FACE_MALE"})
+            )
+        else:
+            detectors.append(
+                YOLODetector(label, str(path), conf=this_conf, iou=iou, imgsz=imgsz)
+            )
+        print(f"[i] loaded {label} -> {path.name} (conf={this_conf})")
+
     if not detectors:
         raise RuntimeError("No detectors found in ai/models")
     return detectors
-
 
 def run(minio_bucket: str, video_key: str, stride_ms: int, conf: float, iou: float,
         endpoint: str, access: str, secret: str, secure: bool):
@@ -102,7 +111,7 @@ if __name__ == "__main__":
     BUCKET   = os.getenv("MINIO_BUCKET")
     KEY      = os.getenv("VIDEO_STORAGE_KEY")
 
-    STRIDE_MS = int(os.getenv("FRAME_STRIDE_MS", "500"))
+    STRIDE_MS = int(os.getenv("FRAME_STRIDE_MS", "200"))
     CONF      = float(os.getenv("CONF_THRESHOLD", "0.5"))
     IOU       = float(os.getenv("IOU_THRESHOLD", "0.5"))
 
