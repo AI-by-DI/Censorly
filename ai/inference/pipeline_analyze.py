@@ -20,22 +20,32 @@ def download_from_minio(bucket: str, key: str, local_path: str, endpoint: str, a
     client = Minio(endpoint, access_key=access, secret_key=secret, secure=secure)
     client.fget_object(bucket, key, local_path)
 
-def build_detectors(conf: float, iou: float):
-    # eldeki model dosyalarından hangisi varsa onu ekler
+def build_detectors(conf: float, iou: float, imgsz: int = 640):
     mapping = {
         "alcohol":  MODELS_DIR / "alcohol_best.pt",
         "blood":    MODELS_DIR / "blood_best.pt",
         "violence": MODELS_DIR / "violence_best.pt",
-        "phobic":   MODELS_DIR / "phobic_best.pt",
-        # "obscene":  MODELS_DIR / "nudenet_640m.pt",  # Ayrı wrapper gerekir
+        "phobic":   MODELS_DIR / "phobic.pt",
+        "obscene":  MODELS_DIR / "nudenet_640m.pt",
     }
+    EXCLUDE_FOR_OBSCENE = {"FACE_FEMALE", "FACE_MALE"}  # <- senin isteğin
+
     detectors = []
     for label, path in mapping.items():
         if path.exists():
-            detectors.append(YOLODetector(label, str(path), conf=conf, iou=iou))
+            if label == "obscene":
+                detectors.append(
+                    YOLODetector(label, str(path), conf=conf, iou=iou, imgsz=imgsz,
+                                exclude_labels=EXCLUDE_FOR_OBSCENE)
+                )
+            else:
+                detectors.append(
+                    YOLODetector(label, str(path), conf=conf, iou=iou, imgsz=imgsz)
+                )
     if not detectors:
-        raise RuntimeError("No detectors found in ai/models. Please add weights.")
+        raise RuntimeError("No detectors found in ai/models")
     return detectors
+
 
 def run(minio_bucket: str, video_key: str, stride_ms: int, conf: float, iou: float,
         endpoint: str, access: str, secret: str, secure: bool):
@@ -59,7 +69,7 @@ def run(minio_bucket: str, video_key: str, stride_ms: int, conf: float, iou: flo
                 for p in preds:
                     entry = {
                         "ts_ms": ts_ms,
-                        "label": det.label,
+                        "label": p.get("sub_label", det.label),
                         "score": p["score"],
                         "bbox":  p["bbox"],     # [cx,cy,w,h] normalized
                         "model": det.weights_name,
