@@ -45,7 +45,7 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
         if label == "obscene":
             detectors.append(
                 YOLODetector(label, str(path), conf=this_conf, iou=iou, imgsz=imgsz,
-                             exclude_labels={"FACE_FEMALE", "FACE_MALE"})
+                             exclude_labels={"FACE_FEMALE", "FACE_MALE","FEMALE_GENITALIA_COVERED","BELLY_COVERED","FEET_COVERED","ANUS_COVERED","FEMALE_BREAST_COVERED","BUTTOCKS_COVERED","ARMPITS_COVERED",})
             )
         else:
             detectors.append(
