@@ -1,37 +1,114 @@
-version: "3.9"
+# version satırını istersen kaldırabilirsin (artık gereksiz uyarı veriyor)
+# version: "3.9"
+
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: censorly_db
+    environment:
+      POSTGRES_USER: censorly
+      POSTGRES_PASSWORD: censorly
+      POSTGRES_DB: censorly
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U censorly"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: censorly_redis
+    ports: ["6379:6379"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: censorly_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # MinIO Console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: censorly_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@censorly.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports: ["5050:80"]
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     build:
-      context: ../
+      context: ..
       dockerfile: docker/api.Dockerfile
+    container_name: censorly_api
     env_file:
-      - ../configs/api.env.sample
+      - ../.env
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
     ports:
       - "8000:8000"
     volumes:
-      - ../:/app
-  worker:
-    build:
-      context: ../
-      dockerfile: docker/worker.Dockerfile
-    env_file:
-      - ../configs/worker.env.sample
-    depends_on:
-      - api
+      - ../apps/api:/app/api
+    command: >
+      uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
   web:
     build:
-      context: ../
+      context: ..
       dockerfile: docker/web.Dockerfile
+    container_name: censorly_web
+    depends_on:
+      - api
     ports:
       - "5173:5173"
     volumes:
-      - ../:/app
-  # redis ve db servisleri demo için yorumda bırakıldı
-  # redis:
-  #   image: redis:7-alpine
-  #   ports: ["6379:6379"]
-  # db:
-  #   image: postgres:16-alpine
-  #   environment:
-  #     POSTGRES_PASSWORD: password
-  #   ports: ["5432:5432"]
+      - ../apps/web:/app
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker.Dockerfile
+    container_name: censorly_worker
+    env_file:
+      - ../.env
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
+    volumes:
+      - ../apps/worker:/app/worker
+    working_dir: /app/worker
+    command: ["python", "main.py"]
+    restart: on-failure
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
