@@ -26,13 +26,14 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
         "alcohol":  MODELS_DIR / "alcohol_best.pt",
         "blood":    MODELS_DIR / "blood_best.pt",
         "violence": MODELS_DIR / "violence_best.pt",
-        "phobic":   MODELS_DIR / "phobic_best.pt",
+        "phobic":   MODELS_DIR / "phobic.pt",
         "obscene":  MODELS_DIR / "nudenet_640m.pt",
     }
 
     conf_by_label = {
         "violence": 0.4,
         "blood": 0.75,
+        "phobic":0.70,
         # diğerleri conf (default)
     }
 

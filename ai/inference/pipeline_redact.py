@@ -218,16 +218,18 @@ def bbox_at_time(seg: dict, t_ms: int) -> Optional[Tuple[List[float], float]]:
 
 # ----------------- drawing -----------------
 
-def draw_red_box_fill(img, x1, y1, x2, y2, label, score, seg_id=None):
+def draw_red_box_outline(img, x1, y1, x2, y2, label, score, seg_id=None, thick=3):
     if x2 <= x1 or y2 <= y1:
         return
-    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), thickness=-1)
+    # Sadece kenarlık (outline)
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), thickness=thick)
+
+    # Etiket arka planı okunaklı olsun diye dolu küçük şerit bırakıyoruz
     tag = f"{label} {score:.2f}" + (f" [{seg_id}]" if seg_id else "")
     (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
     yb1 = max(0, y1 - th - 8)
     cv2.rectangle(img, (x1, yb1), (x1 + tw + 8, y1), (0, 0, 200), thickness=-1)
     cv2.putText(img, tag, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-
 
 def draw_blur_box(img, x1, y1, x2, y2, ksize=35):
     if x2 <= x1 or y2 <= y1:
@@ -255,6 +257,8 @@ def main():
     ap.add_argument("--max_center_dist", type=float, default=0.25, help="eşleştirme için max merkez uzaklığı (normalized)")
     ap.add_argument("--mode", choices=["red", "blur"], default="red", help="Kutu modu: red=solid kırmızı (default), blur=gaussian blur")
     ap.add_argument("--blur_k", type=int, default=35, help="Gaussian blur kernel size (tek sayı, büyüdükçe daha güçlü blur)")
+    ap.add_argument("--box_thick", type=int, default=3,
+                help="Red box outline kalınlığı (px)")
     args = ap.parse_args()
 
     labs = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
@@ -306,7 +310,8 @@ def main():
                 bbox_norm, score = bb
                 x1, y1, x2, y2 = yolo_bbox_to_xyxy(bbox_norm, W, H)
                 if args.mode == "red":
-                    draw_red_box_fill(frame, x1, y1, x2, y2, seg["label"], float(score), seg_id=seg["id"])
+                    draw_red_box_outline(frame, x1, y1, x2, y2, seg["label"], float(score),
+                                        seg_id=seg["id"], thick=args.box_thick)
                 else:
                     draw_blur_box(frame, x1, y1, x2, y2, ksize=args.blur_k)
                 applied += 1
