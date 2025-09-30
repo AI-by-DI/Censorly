@@ -2,6 +2,7 @@
 from __future__ import annotations
 import cv2, math
 from typing import Iterator, Tuple
+import numpy as np
 
 def iter_frames_with_timestamps(video_path: str, stride_ms: int) -> Iterator[Tuple[int, "np.ndarray"]]:
     """

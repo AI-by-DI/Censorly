@@ -259,13 +259,21 @@ def main():
     ap.add_argument("--blur_k", type=int, default=35, help="Gaussian blur kernel size (tek sayı, büyüdükçe daha güçlü blur)")
     ap.add_argument("--box_thick", type=int, default=3,
                 help="Red box outline kalınlığı (px)")
+    # Yeni: etiket bazlı minimum keyframe sayısı (segment içinde kaç tespit karesi olmalı?)
+    ap.add_argument("--min_keyframes_map", type=str, default="blood:2,default:1",
+                help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
     args = ap.parse_args()
 
     labs = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
     msmap = parse_min_score_map(args.min_score_map, args.min_score)
+    # min_keyframes_map -> int'e çevrilmiş dict
+    _mkf = parse_min_score_map(args.min_keyframes_map, 1.0)
+    min_keyframes_map: Dict[str, int] = {k: int(v) for k, v in _mkf.items()}
+
     log("[cfg] labels=", labs or "<all>", "min_score_map=", msmap,
         "hold_gap_ms=", args.hold_gap_ms, "grace_ms=", args.grace_ms,
-        "mode=", args.mode, "blur_k=", args.blur_k)
+        "mode=", args.mode, "blur_k=", args.blur_k,
+        "min_keyframes_map=", min_keyframes_map)
 
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
@@ -277,6 +285,16 @@ def main():
 
     events = load_events(args.jsonl, labs, msmap)
     segments = build_segments_multi(events, args.hold_gap_ms, args.grace_ms, args.iou_thr, args.max_center_dist)
+
+    # --- Yeni: keyframe sayısına göre segment filtreleme ---
+    # Örn. blood için en az 2 keyframe (varsayılan), diğerleri default=1
+    def _keep(seg: dict) -> bool:
+        need = min_keyframes_map.get(seg["label"], min_keyframes_map.get("default", 1))
+        return len(seg["keys"]) >= max(1, int(need))
+
+    before = len(segments)
+    segments = [s for s in segments if _keep(s)]
+    log(f"[i] keyframe filtresi: {before} -> {len(segments)} (min_keyframes_map={min_keyframes_map})")
 
     # writer
     def open_writer(path: str):
@@ -311,7 +329,7 @@ def main():
                 x1, y1, x2, y2 = yolo_bbox_to_xyxy(bbox_norm, W, H)
                 if args.mode == "red":
                     draw_red_box_outline(frame, x1, y1, x2, y2, seg["label"], float(score),
-                                        seg_id=seg["id"], thick=args.box_thick)
+                                         seg_id=seg["id"], thick=args.box_thick)
                 else:
                     draw_blur_box(frame, x1, y1, x2, y2, ksize=args.blur_k)
                 applied += 1
