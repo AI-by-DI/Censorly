@@ -26,3 +26,6 @@ Thumbs.db
 *.avi
 *.mov
 *.mkv
+
+*.csv
+*.png

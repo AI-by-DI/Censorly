@@ -32,7 +32,7 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
 
     conf_by_label = {
         "violence": 0.4,
-        "blood": 0.75,
+        "blood": 0.15,
         "phobic":0.70,
         # diğerleri conf (default)
     }
