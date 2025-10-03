@@ -312,7 +312,7 @@ def main():
     ap.add_argument("--box_thick", type=int, default=3,
                 help="Red box outline kalınlığı (px)")
     # Yeni: etiket bazlı minimum keyframe sayısı (segment içinde kaç tespit karesi olmalı?)
-    ap.add_argument("--min_keyframes_map", type=str, default="blood:2,default:1",
+    ap.add_argument("--min_keyframes_map", type=str, default="default:2",
                 help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
     args = ap.parse_args()
 
@@ -341,7 +341,7 @@ def main():
     # --- Yeni: keyframe sayısına göre segment filtreleme ---
     # Örn. blood için en az 2 keyframe (varsayılan), diğerleri default=1
     def _keep(seg: dict) -> bool:
-        need = min_keyframes_map.get(seg["label"], min_keyframes_map.get("default", 1))
+        need = min_keyframes_map.get(seg["label"], min_keyframes_map.get("default", 2))
         return len(seg["keys"]) >= max(1, int(need))
 
     before = len(segments)

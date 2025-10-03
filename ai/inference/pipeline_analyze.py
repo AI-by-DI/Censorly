@@ -35,7 +35,8 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
         "blood": 0.15,
         "Clown":0.2,
         "Spider":0.1,
-        "Snake":0.1
+        "Snake":0.1,
+        "alcohol":0.1,
         # diğerleri conf (default)
     }
 
