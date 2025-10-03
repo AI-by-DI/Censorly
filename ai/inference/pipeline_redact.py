@@ -218,19 +218,71 @@ def bbox_at_time(seg: dict, t_ms: int) -> Optional[Tuple[List[float], float]]:
 
 # ----------------- drawing -----------------
 
-def draw_red_box_outline(img, x1, y1, x2, y2, label, score, seg_id=None, thick=3):
+def draw_red_box_outline(
+    img, x1, y1, x2, y2, label, score, seg_id=None, thick=3, put_inside=True
+):
     if x2 <= x1 or y2 <= y1:
         return
-    # Sadece kenarlık (outline)
+
+    # 1) Kırmızı OUTLINE kutu
     cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), thickness=thick)
 
-    # Etiket arka planı okunaklı olsun diye dolu küçük şerit bırakıyoruz
-    tag = f"{label} {score:.2f}" + (f" [{seg_id}]" if seg_id else "")
-    (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-    yb1 = max(0, y1 - th - 8)
-    cv2.rectangle(img, (x1, yb1), (x1 + tw + 8, y1), (0, 0, 200), thickness=-1)
-    cv2.putText(img, tag, (x1 + 4, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+    # 2) Etiket metni (seg_id opsiyonel)
+    tag_full = f"{label} {score:.2f}" + (f" [{seg_id}]" if seg_id else "")
+    font = cv2.FONT_HERSHEY_SIMPLEX
 
+    # Kutunun içine sığdırmak için dinamik font ölçekleme
+    bw, bh = (x2 - x1), (y2 - y1)
+    pad = max(4, thick + 1)
+    max_w = max(10, bw - 2 * pad)
+    max_h = max(10, bh - 2 * pad)
+
+    font_scale = 0.7
+    font_thick = 2
+
+    def text_size(txt, fs, ft):
+        (tw, th), _ = cv2.getTextSize(txt, font, fs, ft)
+        return tw, th
+
+    tw, th = text_size(tag_full, font_scale, font_thick)
+
+    # Gerekirse küçült
+    tries = 0
+    tag = tag_full
+    while (tw > max_w or th > max_h) and tries < 10:
+        font_scale *= 0.85
+        if font_thick > 1 and tries >= 2:
+            font_thick -= 1
+        tw, th = text_size(tag, font_scale, font_thick)
+        tries += 1
+
+    # Hâlâ sığmıyorsa etiketi kısalt (uzun label veya seg_id'yi bırakma)
+    if tw > max_w or th > max_h:
+        short_label = (label[:8] + "…") if len(label) > 9 else label
+        tag = f"{short_label} {score:.2f}"
+        font_scale = max(0.4, font_scale * 0.9)
+        tw, th = text_size(tag, font_scale, font_thick)
+
+    # 3) Konumlandırma ve yarı saydam zemin
+    if put_inside and tw <= max_w and th <= max_h:
+        tx = x1 + pad
+        ty = y1 + pad + th  # OpenCV metin alt hizalaması yapar
+        bg_x1, bg_y1 = tx - 2, ty - th - 4
+        bg_x2, bg_y2 = min(x2, tx + tw + 2), min(y2, ty + 4)
+
+        # Yarı saydam fon
+        overlay = img.copy()
+        cv2.rectangle(overlay, (bg_x1, max(y1, bg_y1)), (bg_x2, bg_y2), (0, 0, 180), -1)
+        cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
+
+        # Metin
+        cv2.putText(img, tag, (tx, ty), font, font_scale, (255, 255, 255), font_thick, cv2.LINE_AA)
+    else:
+        # Kutunun içine sığmadıysa dış ÜST şerit
+        (tw, th), _ = cv2.getTextSize(tag, font, 0.6, 2)
+        yb1 = max(0, y1 - th - 8)
+        cv2.rectangle(img, (x1, yb1), (x1 + tw + 8, y1), (0, 0, 200), thickness=-1)
+        cv2.putText(img, tag, (x1 + 4, y1 - 5), font, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 def draw_blur_box(img, x1, y1, x2, y2, ksize=35):
     if x2 <= x1 or y2 <= y1:
         return
@@ -260,7 +312,7 @@ def main():
     ap.add_argument("--box_thick", type=int, default=3,
                 help="Red box outline kalınlığı (px)")
     # Yeni: etiket bazlı minimum keyframe sayısı (segment içinde kaç tespit karesi olmalı?)
-    ap.add_argument("--min_keyframes_map", type=str, default="blood:2,default:1",
+    ap.add_argument("--min_keyframes_map", type=str, default="default:2",
                 help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
     args = ap.parse_args()
 
@@ -289,7 +341,7 @@ def main():
     # --- Yeni: keyframe sayısına göre segment filtreleme ---
     # Örn. blood için en az 2 keyframe (varsayılan), diğerleri default=1
     def _keep(seg: dict) -> bool:
-        need = min_keyframes_map.get(seg["label"], min_keyframes_map.get("default", 1))
+        need = min_keyframes_map.get(seg["label"], min_keyframes_map.get("default", 2))
         return len(seg["keys"]) >= max(1, int(need))
 
     before = len(segments)
