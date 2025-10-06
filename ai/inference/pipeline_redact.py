@@ -1,7 +1,7 @@
 # ai/inference/pipeline_redact.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import argparse, json, pathlib
+import argparse, json, pathlib, subprocess, shutil, os
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
@@ -283,6 +283,7 @@ def draw_red_box_outline(
         yb1 = max(0, y1 - th - 8)
         cv2.rectangle(img, (x1, yb1), (x1 + tw + 8, y1), (0, 0, 200), thickness=-1)
         cv2.putText(img, tag, (x1 + 4, y1 - 5), font, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
 def draw_blur_box(img, x1, y1, x2, y2, ksize=35):
     if x2 <= x1 or y2 <= y1:
         return
@@ -291,6 +292,42 @@ def draw_blur_box(img, x1, y1, x2, y2, ksize=35):
     if roi.size == 0:
         return
     img[y1:y2, x1:x2] = cv2.GaussianBlur(roi, (k, k), 0)
+
+
+# ----------------- audio mux (ffmpeg) -----------------
+
+def mux_audio_with_ffmpeg(video_no_audio: pathlib.Path, audio_src: pathlib.Path, final_out: pathlib.Path, ffmpeg_path: str = "ffmpeg") -> bool:
+    """
+    Sessiz videonun görüntüsünü koruyup sesi audio_src'den kopyalayarak final_out üretir.
+    -c:v copy ile yeniden encode yok, -shortest ile senkron güvenli.
+    """
+    if shutil.which(ffmpeg_path) is None:
+        log(f"[warn] ffmpeg bulunamadı ({ffmpeg_path}). Ses eklenemedi.")
+        return False
+
+    cmd = [
+        ffmpeg_path,
+        "-y",
+        "-i", str(video_no_audio),
+        "-i", str(audio_src),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        str(final_out),
+    ]
+    log("[ffmpeg] ", " ".join(cmd))
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            log("[ffmpeg][stderr]\n", proc.stderr.decode(errors="ignore"))
+            log("[ffmpeg] hata kodu:", proc.returncode)
+            return False
+        return True
+    except Exception as e:
+        log("[ffmpeg] hata:", e)
+        return False
 
 
 # ----------------- main -----------------
@@ -314,6 +351,15 @@ def main():
     # Yeni: etiket bazlı minimum keyframe sayısı (segment içinde kaç tespit karesi olmalı?)
     ap.add_argument("--min_keyframes_map", type=str, default="default:2",
                 help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
+
+    # --- YENİ: Audio seçenekleri ---
+    ap.add_argument("--keep_audio", action="store_true",
+                    help="Çıktıya sesi ekle (orijinal videodan kopyalar).")
+    ap.add_argument("--audio_src", type=str, default="",
+                    help="Sesi alınacak kaynak video (boşsa --video kullanılır).")
+    ap.add_argument("--ffmpeg_path", type=str, default="ffmpeg",
+                    help="ffmpeg yürütülebilir yolu (örn. /opt/homebrew/bin/ffmpeg, C:\\\\ffmpeg\\\\bin\\\\ffmpeg.exe).")
+
     args = ap.parse_args()
 
     labs = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
@@ -325,7 +371,8 @@ def main():
     log("[cfg] labels=", labs or "<all>", "min_score_map=", msmap,
         "hold_gap_ms=", args.hold_gap_ms, "grace_ms=", args.grace_ms,
         "mode=", args.mode, "blur_k=", args.blur_k,
-        "min_keyframes_map=", min_keyframes_map)
+        "min_keyframes_map=", min_keyframes_map,
+        "keep_audio=", args.keep_audio, "audio_src=", args.audio_src or "<video>", "ffmpeg=", args.ffmpeg_path)
 
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
@@ -348,7 +395,14 @@ def main():
     segments = [s for s in segments if _keep(s)]
     log(f"[i] keyframe filtresi: {before} -> {len(segments)} (min_keyframes_map={min_keyframes_map})")
 
-    # writer
+    # writer (sessiz geçici dosya)
+    out_final = pathlib.Path(args.out)
+    if args.keep_audio:
+        out_noaudio = out_final.with_name(out_final.stem + "_noaudio" + out_final.suffix)
+        target_path_for_writer = out_noaudio
+    else:
+        target_path_for_writer = out_final
+
     def open_writer(path: str):
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         vw = cv2.VideoWriter(path, fourcc, fps, (W, H))
@@ -357,9 +411,9 @@ def main():
         fourcc = cv2.VideoWriter_fourcc(*"avc1")
         return cv2.VideoWriter(path, fourcc, fps, (W, H))
 
-    out = open_writer(args.out)
+    out = open_writer(str(target_path_for_writer))
     if not out or not out.isOpened():
-        raise RuntimeError(f"Cannot open writer: {args.out}")
+        raise RuntimeError(f"Cannot open writer: {target_path_for_writer}")
 
     frame_idx = 0
     applied = 0
@@ -381,9 +435,9 @@ def main():
                 x1, y1, x2, y2 = yolo_bbox_to_xyxy(bbox_norm, W, H)
                 if args.mode == "red":
                     draw_red_box_outline(frame, x1, y1, x2, y2, seg["label"], float(score),
-                                         seg_id=seg["id"], thick=args.box_thick)
+                                         seg_id=seg["id"], thick=int(args.box_thick))
                 else:
-                    draw_blur_box(frame, x1, y1, x2, y2, ksize=args.blur_k)
+                    draw_blur_box(frame, x1, y1, x2, y2, ksize=int(args.blur_k))
                 applied += 1
                 secs[sec][seg["label"]] += 1
 
@@ -394,6 +448,22 @@ def main():
 
     cap.release()
     out.release()
+
+    # --- YENİ: Audio mux ---
+    if args.keep_audio:
+        audio_src = pathlib.Path(args.audio_src) if args.audio_src else pathlib.Path(args.video)
+        ok = mux_audio_with_ffmpeg(target_path_for_writer, audio_src, out_final, ffmpeg_path=args.ffmpeg_path)
+        if ok:
+            # geçici sessiz dosyayı sil
+            try:
+                os.remove(target_path_for_writer)
+            except Exception:
+                pass
+            log(f"[✓] Ses eklendi → {out_final}")
+        else:
+            log(f"[warn] Ses eklenemedi. Sessiz çıktı tutuldu: {target_path_for_writer}")
+    else:
+        log(f"[i] Ses ekleme devre dışı. Çıktı: {out_final}")
 
     # raporlar
     outp = pathlib.Path(args.out)
