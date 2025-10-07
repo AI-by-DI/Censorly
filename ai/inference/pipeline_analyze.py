@@ -1,6 +1,6 @@
 # ai/inference/pipeline_analyze.py
 from __future__ import annotations
-import os, json, uuid, pathlib
+import os, json, uuid, pathlib, subprocess
 from dotenv import load_dotenv
 from minio import Minio
 from ai.inference.ffmpeg_utils import iter_frames_with_timestamps
@@ -20,20 +20,50 @@ def download_from_minio(bucket: str, key: str, local_path: str, endpoint: str, a
     client = Minio(endpoint, access_key=access, secret_key=secret, secure=secure)
     client.fget_object(bucket, key, local_path)
 
+# --- NEW: derive_dynamic_thresholds entegrasyonu ---
+def generate_thresholds(jsonl_path: pathlib.Path, out_json_path: pathlib.Path, classes: str = "blood,alcohol") -> bool:
+    """
+    derive_dynamic_thresholds modülünü çağırıp JSON çıktı üretir.
+    """
+    try:
+        cmd = [
+            "python", "-m", "ai.inference.derive_dynamic_thresholds",
+            "--jsonl", str(jsonl_path),
+            "--out",   str(out_json_path),
+            "--classes", classes
+        ]
+        print("[thr] running:", " ".join(cmd))
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if proc.returncode != 0:
+            print("[thr][stderr]\n", proc.stderr)
+            print("[thr] failed with code:", proc.returncode)
+            return False
+        # İstersen stdout’u bilgi amaçlı yaz
+        try:
+            print("[thr][stdout]\n", proc.stdout[:800])  # çok uzunsa kısalt
+        except Exception:
+            pass
+        print(f"[thr][ok] thresholds saved -> {out_json_path}")
+        return True
+    except Exception as e:
+        print("[thr] error:", e)
+        return False
+
 # pipeline_analyze.py (ilgili kısım)
 def build_detectors(conf: float, iou: float, imgsz: int = 640):
     mapping = {
         "alcohol":  MODELS_DIR / "alcohol_best.pt",
         "blood":    MODELS_DIR / "blood_best.pt",
-        "violence": MODELS_DIR / "violence_best.pt",
-        "phobic":   MODELS_DIR / "phobic_6.pt",
+        "violence": MODELS_DIR / "violence_best(2).pt",
+        "phobic":   MODELS_DIR / "phobic_3.pt",
         "obscene":  MODELS_DIR / "nudenet_640m.pt",
     }
 
     conf_by_label = {
         "violence": 0.4,
         "blood": 0.15,
-        "phobic":0.03
+        "phobic": 0.03,
+        "alcohol":0.25,
         # diğerleri conf (default)
     }
 
@@ -45,7 +75,7 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
         if label == "obscene":
             detectors.append(
                 YOLODetector(label, str(path), conf=this_conf, iou=iou, imgsz=imgsz,
-                             exclude_labels={"FACE_FEMALE", "FACE_MALE","FEMALE_GENITALIA_COVERED","BELLY_COVERED","FEET_COVERED","ANUS_COVERED","FEMALE_BREAST_COVERED","BUTTOCKS_COVERED","ARMPITS_COVERED",})
+                             exclude_labels={"FACE_FEMALE","FACE_MALE","FEMALE_GENITALIA_COVERED","BELLY_COVERED","FEET_COVERED","ANUS_COVERED","FEMALE_BREAST_COVERED","BUTTOCKS_COVERED","ARMPITS_COVERED"})
             )
         else:
             detectors.append(
@@ -58,7 +88,8 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
     return detectors
 
 def run(minio_bucket: str, video_key: str, stride_ms: int, conf: float, iou: float,
-        endpoint: str, access: str, secret: str, secure: bool):
+        endpoint: str, access: str, secret: str, secure: bool,
+        generate_thr: bool = True):
     ensure_dirs()
     run_id = uuid.uuid4().hex[:8]
     local_video = VIDEOS_DIR / f"{run_id}.mp4"
@@ -86,7 +117,6 @@ def run(minio_bucket: str, video_key: str, stride_ms: int, conf: float, iou: flo
                         "extra": {}
                     }
                     frame_events.append(entry)
-            # Toplu yaz
             for e in frame_events:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
             n_frames += 1
@@ -95,12 +125,27 @@ def run(minio_bucket: str, video_key: str, stride_ms: int, conf: float, iou: flo
     print(f"[✓] Done. frames={n_frames}, detections={n_dets}")
     print(f"[→] Preview: tail -n 5 {out_jsonl}")
 
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    import os, pathlib
+    # --- NEW: analizden hemen sonra blood & alcohol için thresholds üret ---
+    thresholds_json = OUT_DIR / f"thresholds_{run_id}.json"
+    if generate_thr:
+        ok = generate_thresholds(out_jsonl, thresholds_json, classes="blood,alcohol")
+        if ok:
+            # Kullanıcıya hazır redact komutu ipucu:
+            print("\n[tip] PowerShell için redact örneği (backtick satır devamlama ile):")
+        else:
+            print("[thr][warn] thresholds üretimi başarısız oldu.")
+    else:
+        print("[thr][skip] GENERATE_THRESHOLDS=false — thresholds üretimi atlandı.")
 
+    return {
+        "run_id": run_id,
+        "video_path": str(local_video),
+        "inference_jsonl": str(out_jsonl),
+        "thresholds_json": str(thresholds_json) if generate_thr else None
+    }
+
+if __name__ == "__main__":
     # configs/ai.env.sample dosyasını yükle
-    BASE_DIR = pathlib.Path(__file__).resolve().parents[2]  # CENSORLY/
     ENV_PATH = BASE_DIR / "configs" / "ai.env.sample"
     load_dotenv(dotenv_path=ENV_PATH)
 
@@ -116,5 +161,7 @@ if __name__ == "__main__":
     CONF      = float(os.getenv("CONF_THRESHOLD", "0.5"))
     IOU       = float(os.getenv("IOU_THRESHOLD", "0.5"))
 
-    run(BUCKET, KEY, STRIDE_MS, CONF, IOU, ENDPOINT, ACCESS, SECRET, SECURE)
+    # thresholds otomatik üretim kontrolü (default: true)
+    GENERATE_THRESHOLDS = os.getenv("GENERATE_THRESHOLDS", "true").lower() == "true"
 
+    run(BUCKET, KEY, STRIDE_MS, CONF, IOU, ENDPOINT, ACCESS, SECRET, SECURE, generate_thr=GENERATE_THRESHOLDS)

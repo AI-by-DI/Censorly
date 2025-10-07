@@ -256,7 +256,7 @@ def draw_red_box_outline(
         tw, th = text_size(tag, font_scale, font_thick)
         tries += 1
 
-    # Hâlâ sığmıyorsa etiketi kısalt (uzun label veya seg_id'yi bırakma)
+    # Hâlâ sığmıyorsa etiketi kısalt
     if tw > max_w or th > max_h:
         short_label = (label[:8] + "…") if len(label) > 9 else label
         tag = f"{short_label} {score:.2f}"
@@ -266,19 +266,16 @@ def draw_red_box_outline(
     # 3) Konumlandırma ve yarı saydam zemin
     if put_inside and tw <= max_w and th <= max_h:
         tx = x1 + pad
-        ty = y1 + pad + th  # OpenCV metin alt hizalaması yapar
+        ty = y1 + pad + th
         bg_x1, bg_y1 = tx - 2, ty - th - 4
         bg_x2, bg_y2 = min(x2, tx + tw + 2), min(y2, ty + 4)
 
-        # Yarı saydam fon
         overlay = img.copy()
         cv2.rectangle(overlay, (bg_x1, max(y1, bg_y1)), (bg_x2, bg_y2), (0, 0, 180), -1)
-        cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
+        cv2.addWeighted(overlay, 0.55, img, 0.45, 0)
 
-        # Metin
         cv2.putText(img, tag, (tx, ty), font, font_scale, (255, 255, 255), font_thick, cv2.LINE_AA)
     else:
-        # Kutunun içine sığmadıysa dış ÜST şerit
         (tw, th), _ = cv2.getTextSize(tag, font, 0.6, 2)
         yb1 = max(0, y1 - th - 8)
         cv2.rectangle(img, (x1, yb1), (x1 + tw + 8, y1), (0, 0, 200), thickness=-1)
@@ -346,27 +343,57 @@ def main():
     ap.add_argument("--max_center_dist", type=float, default=0.25, help="eşleştirme için max merkez uzaklığı (normalized)")
     ap.add_argument("--mode", choices=["red", "blur"], default="red", help="Kutu modu: red=solid kırmızı (default), blur=gaussian blur")
     ap.add_argument("--blur_k", type=int, default=35, help="Gaussian blur kernel size (tek sayı, büyüdükçe daha güçlü blur)")
-    ap.add_argument("--box_thick", type=int, default=3,
-                help="Red box outline kalınlığı (px)")
-    # Yeni: etiket bazlı minimum keyframe sayısı (segment içinde kaç tespit karesi olmalı?)
-    ap.add_argument("--min_keyframes_map", type=str, default="default:2",
-                help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
+    ap.add_argument("--box_thick", type=int, default=3, help="Red box outline kalınlığı (px)")
+    ap.add_argument("--min_keyframes_map", type=str, default="default:2", help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
 
     # --- YENİ: Audio seçenekleri ---
-    ap.add_argument("--keep_audio", action="store_true",
-                    help="Çıktıya sesi ekle (orijinal videodan kopyalar).")
-    ap.add_argument("--audio_src", type=str, default="",
-                    help="Sesi alınacak kaynak video (boşsa --video kullanılır).")
-    ap.add_argument("--ffmpeg_path", type=str, default="ffmpeg",
-                    help="ffmpeg yürütülebilir yolu (örn. /opt/homebrew/bin/ffmpeg, C:\\\\ffmpeg\\\\bin\\\\ffmpeg.exe).")
+    ap.add_argument("--keep_audio", action="store_true", help="Çıktıya sesi ekle (orijinal videodan kopyalar).")
+    ap.add_argument("--audio_src", type=str, default="", help="Sesi alınacak kaynak video (boşsa --video kullanılır).")
+    ap.add_argument("--ffmpeg_path", type=str, default="ffmpeg", help="ffmpeg yürütülebilir yolu (örn. /opt/homebrew/bin/ffmpeg, C:\\\\ffmpeg\\\\bin\\\\ffmpeg.exe).")
+
+    # --- YENİ: Dinamik eşik entegrasyonu (blood & alcohol) ---
+    ap.add_argument("--thresholds_json", type=str, default="",
+                    help="derive_dynamic_thresholds çıktısı (JSON). Sadece dyn_from_json etiketleri için uygulanır.")
+    ap.add_argument("--dyn_from_json", type=str, default="blood,alcohol",
+                    help="thresholds_json içinden dinamik eşik alınacak etiketler (virgüllü). Varsayılan: blood,alcohol")
 
     args = ap.parse_args()
 
     labs = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
     msmap = parse_min_score_map(args.min_score_map, args.min_score)
+
     # min_keyframes_map -> int'e çevrilmiş dict
     _mkf = parse_min_score_map(args.min_keyframes_map, 1.0)
     min_keyframes_map: Dict[str, int] = {k: int(v) for k, v in _mkf.items()}
+
+    # --- YENI: thresholds_json'dan blood & alcohol 'on' değerlerini msmap'e uygula ---
+    if args.thresholds_json:
+        try:
+            p = pathlib.Path(args.thresholds_json)
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                thr = (data.get("thresholds") or {})
+                wanted_dyn = {s.strip().lower() for s in (args.dyn_from_json or "").split(",") if s.strip()}
+                updated = {}
+                for lab in wanted_dyn:
+                    node = thr.get(lab)
+                    if isinstance(node, dict) and ("on" in node):
+                        try:
+                            on_val = float(node["on"])
+                            msmap[lab] = on_val
+                            updated[lab] = round(on_val, 3)
+                        except Exception:
+                            pass
+                if "default" not in msmap:
+                    msmap["default"] = args.min_score
+                if updated:
+                    log(f"[dyn] thresholds_json uygulandı → {args.thresholds_json} | dyn_from_json={sorted(list(wanted_dyn))} | güncellenen={updated}")
+                else:
+                    log(f"[dyn][info] thresholds_json okundu fakat güncellenecek etiket bulunamadı. dyn_from_json={sorted(list(wanted_dyn))}")
+            else:
+                log(f"[dyn][warn] thresholds_json bulunamadı: {p}")
+        except Exception as e:
+            log(f"[dyn][warn] thresholds_json okunamadı: {e}")
 
     log("[cfg] labels=", labs or "<all>", "min_score_map=", msmap,
         "hold_gap_ms=", args.hold_gap_ms, "grace_ms=", args.grace_ms,
@@ -385,8 +412,7 @@ def main():
     events = load_events(args.jsonl, labs, msmap)
     segments = build_segments_multi(events, args.hold_gap_ms, args.grace_ms, args.iou_thr, args.max_center_dist)
 
-    # --- Yeni: keyframe sayısına göre segment filtreleme ---
-    # Örn. blood için en az 2 keyframe (varsayılan), diğerleri default=1
+    # --- keyframe sayısına göre segment filtreleme ---
     def _keep(seg: dict) -> bool:
         need = min_keyframes_map.get(seg["label"], min_keyframes_map.get("default", 2))
         return len(seg["keys"]) >= max(1, int(need))
@@ -449,12 +475,11 @@ def main():
     cap.release()
     out.release()
 
-    # --- YENİ: Audio mux ---
+    # --- Audio mux ---
     if args.keep_audio:
         audio_src = pathlib.Path(args.audio_src) if args.audio_src else pathlib.Path(args.video)
         ok = mux_audio_with_ffmpeg(target_path_for_writer, audio_src, out_final, ffmpeg_path=args.ffmpeg_path)
         if ok:
-            # geçici sessiz dosyayı sil
             try:
                 os.remove(target_path_for_writer)
             except Exception:

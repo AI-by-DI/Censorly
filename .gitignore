@@ -29,3 +29,6 @@ Thumbs.db
 
 *.csv
 *.png
+
+data/outputs/*.json
+data/outputs/*.jsonl
