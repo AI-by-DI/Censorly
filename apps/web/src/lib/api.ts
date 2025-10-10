@@ -21,19 +21,19 @@ export const tokenStore = {
   }
 };
 
-/** --------- Axios instance --------- */
+/** ================================================================
+ *  Axios instance + Interceptors
+ *  ================================================================ */
 const api = axios.create({
   baseURL: BASE_URL,
   withCredentials: false,
-  // timeout: 15000, // istersen ekleyebilirsin
 });
 
-/** Header yardımcıları */
 function ensureAxiosHeaders(h: InternalAxiosRequestConfig["headers"]) {
   return (h instanceof AxiosHeaders) ? h : new AxiosHeaders(h);
 }
 
-/** --------- Request Interceptor (Bearer) --------- */
+/** Bearer ekleme */
 api.interceptors.request.use((config) => {
   const t = tokenStore.access;
   if (t) {
@@ -44,7 +44,7 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-/** --------- Response Interceptor (401 -> refresh) --------- */
+/** 401 → refresh denemesi (tek uçlu, kuyruklu) */
 let refreshing = false;
 let waiters: Array<() => void> = [];
 
@@ -58,11 +58,10 @@ api.interceptors.response.use(
     if (status === 401 && !original._retried && hasRefresh) {
       original._retried = true;
 
-      // Tek seferde refresh
       if (!refreshing) {
         refreshing = true;
         try {
-          // Refresh endpoint — backend’in şu anki sürümüne göre JSON body { token: <refresh> }
+          // Backend’in mevcut sürümüne göre: { token: <refresh> }
           const { data } = await axios.post(
             `${BASE_URL}/auth/refresh`,
             { token: tokenStore.refresh },
@@ -80,36 +79,29 @@ api.interceptors.response.use(
         waiters.forEach((w) => w());
         waiters = [];
       } else {
-        // Devam eden refresh tamamlanana kadar bekle
         await new Promise<void>((res) => waiters.push(res));
       }
 
-      // Refresh sonrası isteği yeniden dene (TIP-SAFE)
+      // Yeniden dene
       const at = tokenStore.access;
-
       const retryCfg: AxiosRequestConfig = {
-        // orijinali kopyala
         ...(original as AxiosRequestConfig),
-        // header'ları normalize et (undefined ise boş obje ver)
         headers: {
           ...(original?.headers as any),
           ...(at ? { Authorization: `Bearer ${at}` } : {}),
         },
       };
-
-      // Axios, düz obje header'ı kabul eder (AxiosHeaders olmasına gerek yok)
       return api(retryCfg);
-
-
     }
 
     return Promise.reject(err);
   }
 );
 
-/** --------- Convenience Auth API'leri --------- */
+/** ================================================================
+ *  USER / AUTH (kullanıcı tabanlı)
+ *  ================================================================ */
 export const authApi = {
-  /** Register — backend JSON bekliyorsa bu sürüm; form istiyorsan alt yorumdaki sürümü kullan */
   async register(email: string, password: string, country?: string | null, age?: number | null) {
     const body: Record<string, any> = { email, password };
     if (country) body.country = country;          // ISO-2, örn "TR"
@@ -119,21 +111,8 @@ export const authApi = {
       headers: { "Content-Type": "application/json" }
     });
     return data;
-
-    /*  Eğer backend application/x-www-form-urlencoded bekliyorsa bunu kullan:
-    const form = new URLSearchParams();
-    form.set("email", email);
-    form.set("password", password);
-    if (country) form.set("country", country);
-    if (age !== null && age !== undefined) form.set("age", String(age));
-    const { data } = await api.post("/auth/register", form, {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }
-    });
-    return data;
-    */
   },
 
-  /** Login — backend JSON kabul ediyor (Swagger’da kullandığınla uyumlu) */
   async login(email: string, password: string) {
     const { data } = await api.post(
       "/auth/login",
@@ -144,13 +123,11 @@ export const authApi = {
     return data;
   },
 
-  /** Kimlik bilgisi */
   async me() {
     const { data } = await api.get("/auth/me");
     return data;
   },
 
-  /** Logout — Authorization header + body’de refresh_token (backend’in güncel sürümüne uygun) */
   async logout() {
     const at = tokenStore.access;
     const rt = tokenStore.refresh;
@@ -160,9 +137,151 @@ export const authApi = {
       { refresh_token: rt ?? null },
       { headers: at ? { Authorization: `Bearer ${at}` } : {} }
     );
-
     tokenStore.clear();
   }
 };
+
+/** ================================================================
+ *  PREFERENCES (profil tabanlı)
+ *  ================================================================ */
+
+/** --- Tipler --- */
+export type Category =
+  | "alcohol"
+  | "blood"
+  | "violence"
+  | "nudity"
+  | "clown"
+  | "snake"
+  | "spider";
+
+export const CATEGORIES: Category[] = [
+  "alcohol", "blood", "violence", "nudity", "clown", "snake", "spider"
+];
+
+export type Mode = "blur" | "skip";
+export type EffectiveMode = "blur" | "skip" | "none"; // none = dokunma/oynat
+
+export type PreferencePayload = {
+  name?: string;
+  // true = sansürleme (oynat), false = sansürle
+  allow_map: Partial<Record<Category, boolean>>;
+  // global fallback (kategori özel seçilmezse)
+  mode: Mode;
+  // sadece sansürlenecek kategoriler için tip (blur/skip)
+  mode_map: Partial<Record<Category, Mode>>;
+};
+
+export type PreferenceOut = PreferencePayload & {
+  id: string;
+  updated_at?: string;
+};
+
+export type EffectiveOut = {
+  profile_id: string;
+  effective: Record<Category | string, EffectiveMode>;
+};
+
+/** --- Helpers --- */
+function completeAllowMap(src: Partial<Record<Category, boolean>>) {
+  const out: Partial<Record<Category, boolean>> = {};
+  for (const c of CATEGORIES) out[c] = src[c] ?? true; // default: sansürleme (oynat)
+  return out;
+}
+
+/** Form-state → API payload (gereksizleri at, eksikleri tamamla) */
+export function sanitizePreferencePayload(s: PreferencePayload): PreferencePayload {
+  const allow_full = completeAllowMap(s.allow_map || {});
+  const filteredModeMap: Partial<Record<Category, Mode>> = {};
+  for (const c of CATEGORIES) {
+    if (allow_full[c] === false) {
+      filteredModeMap[c] = s.mode_map?.[c] || s.mode || "blur";
+    }
+  }
+  return {
+    name: s.name || "default",
+    mode: s.mode || "blur",
+    allow_map: allow_full,
+    mode_map: filteredModeMap,
+  };
+}
+
+/** --- API'ler --- */
+export const prefApi = {
+  async list(): Promise<PreferenceOut[]> {
+    const { data } = await api.get("/me/preferences");
+    return data;
+  },
+
+  async create(body: PreferencePayload): Promise<PreferenceOut> {
+    const payload = sanitizePreferencePayload(body);
+    const { data } = await api.post("/me/preferences", payload, {
+      headers: { "Content-Type": "application/json" }
+    });
+    return data;
+    // 409 gelirse aynı isimli profil var demektir
+  },
+
+  async update(id: string, body: Partial<PreferencePayload>): Promise<PreferenceOut> {
+    // Kısmi güncelleme için minimal payload gönderebilirsin.
+    // Eğer mode/allow_map değişiyorsa sanitize edelim:
+    const patch =
+      body.mode || body.allow_map || body.mode_map
+        ? sanitizePreferencePayload({
+            name: body.name ?? "default",
+            mode: (body.mode as Mode) ?? "blur",
+            allow_map: (body.allow_map || {}) as Partial<Record<Category, boolean>>,
+            mode_map: (body.mode_map || {}) as Partial<Record<Category, Mode>>,
+          })
+        : body;
+
+    const { data } = await api.put(`/me/preferences/${id}`, patch, {
+      headers: { "Content-Type": "application/json" }
+    });
+    return data;
+  },
+
+  async effective(id: string): Promise<EffectiveOut> {
+    const { data } = await api.get(`/me/preferences/${id}/effective`);
+    return data;
+  },
+};
+
+/** --- Aktif profil ID yönetimi (frontend içinde globale gerek yok) --- */
+const ACTIVE_PROFILE_KEY = "active_profile_id";
+export const ActiveProfile = {
+  get(): string | null { return localStorage.getItem(ACTIVE_PROFILE_KEY); },
+  set(id: string)      { localStorage.setItem(ACTIVE_PROFILE_KEY, id); },
+  clear()              { localStorage.removeItem(ACTIVE_PROFILE_KEY); },
+};
+
+/** Kullanışlı default profil (ilk kurulumda) */
+export const DEFAULT_PREF: PreferencePayload = {
+  name: "default",
+  mode: "blur",
+  allow_map: {
+    alcohol: true,
+    blood: true,
+    violence: true,
+    nudity: true,
+    clown: true,
+    snake: true,
+    spider: true,
+  },
+  mode_map: {},
+};
+
+/** Profil yoksa oluşturup aktif yapar; varsa ilki/aktif olanı döner */
+export async function ensureActiveProfile(): Promise<PreferenceOut> {
+  const list = await prefApi.list();
+  if (list.length === 0) {
+    const created = await prefApi.create(DEFAULT_PREF);
+    ActiveProfile.set(created.id);
+    return created;
+  }
+  const currentId = ActiveProfile.get() ?? list[0].id;
+  ActiveProfile.set(currentId);
+  return list.find(p => p.id === currentId) ?? list[0];
+}
 
 export default api;

@@ -1,33 +1,54 @@
-import { useEffect, useState } from "react";
-import { authApi } from "../lib/api";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { ensureActiveProfile } from "../lib/api";
 
 export default function Dashboard() {
-  const nav = useNavigate();
-  const [me, setMe] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    authApi.me().then(setMe).catch(() => {
-      nav("/login");
-    });
-  }, [nav]);
-
-  const logout = async () => {
-    await authApi.logout();
-    nav("/login");
-  };
+    (async () => {
+      try {
+        await ensureActiveProfile(); // tek profil: yoksa oluştur
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
   return (
-    <div style={{ maxWidth: 720, margin: "40px auto" }}>
-      <h2>Dashboard</h2>
-      {me ? (
-        <>
-          <div>Hoş geldin, {me.email}</div>
-          <button onClick={logout} style={{ marginTop: 12 }}>Çıkış</button>
-        </>
-      ) : (
-        <div>Yükleniyor…</div>
-      )}
+    <div style={{ padding: 24 }}>
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 16,
+        }}
+      >
+        <h1 style={{ margin: 0 }}>Censorly</h1>
+        <Link
+          to="/profile"
+          style={{
+            textDecoration: "none",
+            padding: "8px 12px",
+            border: "1px solid #333",
+            borderRadius: 8,
+          }}
+        >
+          Profili Aç
+        </Link>
+      </header>
+
+      <section>
+        {loading ? (
+          <p>Yükleniyor…</p>
+        ) : (
+          <p>
+            Hoş geldin! Sansür tercihlerini yönetmek için{" "}
+            <Link to="/profile">Profil</Link> sayfasına gidebilirsin.
+          </p>
+        )}
+      </section>
     </div>
   );
 }

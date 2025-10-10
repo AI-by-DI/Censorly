@@ -1,3 +1,4 @@
+// src/index.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
@@ -6,10 +7,12 @@ import {
   Route,
   Navigate,
   useLocation,
+  Link,
 } from "react-router-dom";
 
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import Profile from "./pages/Profile"; // ⬅️ eklendi
 
 /** Basit auth state (localStorage 'access' anahtarını izler) */
 function useAuthState() {
@@ -59,11 +62,24 @@ function PublicOnly({ children }) {
 function App() {
   // İlk yüklemede kök yönlendirme için tek seferlik hesap
   const initialAuthed = useMemo(() => !!localStorage.getItem("access"), []);
+  const authed = useAuthState(); // sadece nav göstermek için
+
   return (
     <BrowserRouter>
+      {/* Authed isen basit bir nav gösterelim (yapıyı bozmadan) */}
+      {authed && (
+        <nav style={{ padding: 12, display: "flex", gap: 12, borderBottom: "1px solid #333" }}>
+          <Link to="/dashboard">Dashboard</Link>
+          <Link to="/profile">Profile</Link>
+        </nav>
+      )}
+
       <Routes>
         {/* Kök path'te durumuna göre yönlendir */}
-        <Route path="/" element={<Navigate to={initialAuthed ? "/dashboard" : "/login"} replace />} />
+        <Route
+          path="/"
+          element={<Navigate to={initialAuthed ? "/dashboard" : "/login"} replace />}
+        />
 
         {/* Giriş sayfası: authed ise /dashboard'a at */}
         <Route
@@ -85,8 +101,21 @@ function App() {
           }
         />
 
+        {/* Profile: korumalı */}
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <Profile />
+            </ProtectedRoute>
+          }
+        />
+
         {/* 404 → duruma göre yönlendir */}
-        <Route path="*" element={<Navigate to={initialAuthed ? "/dashboard" : "/login"} replace />} />
+        <Route
+          path="*"
+          element={<Navigate to={initialAuthed ? "/dashboard" : "/login"} replace />}
+        />
       </Routes>
     </BrowserRouter>
   );
