@@ -1,7 +1,7 @@
 # ai/inference/pipeline_redact.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import argparse, json, pathlib
+import argparse, json, pathlib, subprocess, shutil, os
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
@@ -256,7 +256,7 @@ def draw_red_box_outline(
         tw, th = text_size(tag, font_scale, font_thick)
         tries += 1
 
-    # Hâlâ sığmıyorsa etiketi kısalt (uzun label veya seg_id'yi bırakma)
+    # Hâlâ sığmıyorsa etiketi kısalt
     if tw > max_w or th > max_h:
         short_label = (label[:8] + "…") if len(label) > 9 else label
         tag = f"{short_label} {score:.2f}"
@@ -266,23 +266,21 @@ def draw_red_box_outline(
     # 3) Konumlandırma ve yarı saydam zemin
     if put_inside and tw <= max_w and th <= max_h:
         tx = x1 + pad
-        ty = y1 + pad + th  # OpenCV metin alt hizalaması yapar
+        ty = y1 + pad + th
         bg_x1, bg_y1 = tx - 2, ty - th - 4
         bg_x2, bg_y2 = min(x2, tx + tw + 2), min(y2, ty + 4)
 
-        # Yarı saydam fon
         overlay = img.copy()
         cv2.rectangle(overlay, (bg_x1, max(y1, bg_y1)), (bg_x2, bg_y2), (0, 0, 180), -1)
-        cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
+        cv2.addWeighted(overlay, 0.55, img, 0.45, 0)
 
-        # Metin
         cv2.putText(img, tag, (tx, ty), font, font_scale, (255, 255, 255), font_thick, cv2.LINE_AA)
     else:
-        # Kutunun içine sığmadıysa dış ÜST şerit
         (tw, th), _ = cv2.getTextSize(tag, font, 0.6, 2)
         yb1 = max(0, y1 - th - 8)
         cv2.rectangle(img, (x1, yb1), (x1 + tw + 8, y1), (0, 0, 200), thickness=-1)
         cv2.putText(img, tag, (x1 + 4, y1 - 5), font, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
 def draw_blur_box(img, x1, y1, x2, y2, ksize=35):
     if x2 <= x1 or y2 <= y1:
         return
@@ -291,6 +289,42 @@ def draw_blur_box(img, x1, y1, x2, y2, ksize=35):
     if roi.size == 0:
         return
     img[y1:y2, x1:x2] = cv2.GaussianBlur(roi, (k, k), 0)
+
+
+# ----------------- audio mux (ffmpeg) -----------------
+
+def mux_audio_with_ffmpeg(video_no_audio: pathlib.Path, audio_src: pathlib.Path, final_out: pathlib.Path, ffmpeg_path: str = "ffmpeg") -> bool:
+    """
+    Sessiz videonun görüntüsünü koruyup sesi audio_src'den kopyalayarak final_out üretir.
+    -c:v copy ile yeniden encode yok, -shortest ile senkron güvenli.
+    """
+    if shutil.which(ffmpeg_path) is None:
+        log(f"[warn] ffmpeg bulunamadı ({ffmpeg_path}). Ses eklenemedi.")
+        return False
+
+    cmd = [
+        ffmpeg_path,
+        "-y",
+        "-i", str(video_no_audio),
+        "-i", str(audio_src),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        str(final_out),
+    ]
+    log("[ffmpeg] ", " ".join(cmd))
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            log("[ffmpeg][stderr]\n", proc.stderr.decode(errors="ignore"))
+            log("[ffmpeg] hata kodu:", proc.returncode)
+            return False
+        return True
+    except Exception as e:
+        log("[ffmpeg] hata:", e)
+        return False
 
 
 # ----------------- main -----------------
@@ -309,23 +343,63 @@ def main():
     ap.add_argument("--max_center_dist", type=float, default=0.25, help="eşleştirme için max merkez uzaklığı (normalized)")
     ap.add_argument("--mode", choices=["red", "blur"], default="red", help="Kutu modu: red=solid kırmızı (default), blur=gaussian blur")
     ap.add_argument("--blur_k", type=int, default=35, help="Gaussian blur kernel size (tek sayı, büyüdükçe daha güçlü blur)")
-    ap.add_argument("--box_thick", type=int, default=3,
-                help="Red box outline kalınlığı (px)")
-    # Yeni: etiket bazlı minimum keyframe sayısı (segment içinde kaç tespit karesi olmalı?)
-    ap.add_argument("--min_keyframes_map", type=str, default="default:2",
-                help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
+    ap.add_argument("--box_thick", type=int, default=3, help="Red box outline kalınlığı (px)")
+    ap.add_argument("--min_keyframes_map", type=str, default="default:2", help='Etiket bazlı minimum keyframe sayısı: örn. "blood:2,violence:1,default:1"')
+
+    # --- YENİ: Audio seçenekleri ---
+    ap.add_argument("--keep_audio", action="store_true", help="Çıktıya sesi ekle (orijinal videodan kopyalar).")
+    ap.add_argument("--audio_src", type=str, default="", help="Sesi alınacak kaynak video (boşsa --video kullanılır).")
+    ap.add_argument("--ffmpeg_path", type=str, default="ffmpeg", help="ffmpeg yürütülebilir yolu (örn. /opt/homebrew/bin/ffmpeg, C:\\\\ffmpeg\\\\bin\\\\ffmpeg.exe).")
+
+    # --- YENİ: Dinamik eşik entegrasyonu (blood & alcohol) ---
+    ap.add_argument("--thresholds_json", type=str, default="",
+                    help="derive_dynamic_thresholds çıktısı (JSON). Sadece dyn_from_json etiketleri için uygulanır.")
+    ap.add_argument("--dyn_from_json", type=str, default="blood,alcohol",
+                    help="thresholds_json içinden dinamik eşik alınacak etiketler (virgüllü). Varsayılan: blood,alcohol")
+
     args = ap.parse_args()
 
     labs = [s.strip() for s in args.labels.split(",") if s.strip()] if args.labels else None
     msmap = parse_min_score_map(args.min_score_map, args.min_score)
+
     # min_keyframes_map -> int'e çevrilmiş dict
     _mkf = parse_min_score_map(args.min_keyframes_map, 1.0)
     min_keyframes_map: Dict[str, int] = {k: int(v) for k, v in _mkf.items()}
 
+    # --- YENI: thresholds_json'dan blood & alcohol 'on' değerlerini msmap'e uygula ---
+    if args.thresholds_json:
+        try:
+            p = pathlib.Path(args.thresholds_json)
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                thr = (data.get("thresholds") or {})
+                wanted_dyn = {s.strip().lower() for s in (args.dyn_from_json or "").split(",") if s.strip()}
+                updated = {}
+                for lab in wanted_dyn:
+                    node = thr.get(lab)
+                    if isinstance(node, dict) and ("on" in node):
+                        try:
+                            on_val = float(node["on"])
+                            msmap[lab] = on_val
+                            updated[lab] = round(on_val, 3)
+                        except Exception:
+                            pass
+                if "default" not in msmap:
+                    msmap["default"] = args.min_score
+                if updated:
+                    log(f"[dyn] thresholds_json uygulandı → {args.thresholds_json} | dyn_from_json={sorted(list(wanted_dyn))} | güncellenen={updated}")
+                else:
+                    log(f"[dyn][info] thresholds_json okundu fakat güncellenecek etiket bulunamadı. dyn_from_json={sorted(list(wanted_dyn))}")
+            else:
+                log(f"[dyn][warn] thresholds_json bulunamadı: {p}")
+        except Exception as e:
+            log(f"[dyn][warn] thresholds_json okunamadı: {e}")
+
     log("[cfg] labels=", labs or "<all>", "min_score_map=", msmap,
         "hold_gap_ms=", args.hold_gap_ms, "grace_ms=", args.grace_ms,
         "mode=", args.mode, "blur_k=", args.blur_k,
-        "min_keyframes_map=", min_keyframes_map)
+        "min_keyframes_map=", min_keyframes_map,
+        "keep_audio=", args.keep_audio, "audio_src=", args.audio_src or "<video>", "ffmpeg=", args.ffmpeg_path)
 
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
@@ -338,8 +412,7 @@ def main():
     events = load_events(args.jsonl, labs, msmap)
     segments = build_segments_multi(events, args.hold_gap_ms, args.grace_ms, args.iou_thr, args.max_center_dist)
 
-    # --- Yeni: keyframe sayısına göre segment filtreleme ---
-    # Örn. blood için en az 2 keyframe (varsayılan), diğerleri default=1
+    # --- keyframe sayısına göre segment filtreleme ---
     def _keep(seg: dict) -> bool:
         need = min_keyframes_map.get(seg["label"], min_keyframes_map.get("default", 2))
         return len(seg["keys"]) >= max(1, int(need))
@@ -348,7 +421,14 @@ def main():
     segments = [s for s in segments if _keep(s)]
     log(f"[i] keyframe filtresi: {before} -> {len(segments)} (min_keyframes_map={min_keyframes_map})")
 
-    # writer
+    # writer (sessiz geçici dosya)
+    out_final = pathlib.Path(args.out)
+    if args.keep_audio:
+        out_noaudio = out_final.with_name(out_final.stem + "_noaudio" + out_final.suffix)
+        target_path_for_writer = out_noaudio
+    else:
+        target_path_for_writer = out_final
+
     def open_writer(path: str):
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         vw = cv2.VideoWriter(path, fourcc, fps, (W, H))
@@ -357,9 +437,9 @@ def main():
         fourcc = cv2.VideoWriter_fourcc(*"avc1")
         return cv2.VideoWriter(path, fourcc, fps, (W, H))
 
-    out = open_writer(args.out)
+    out = open_writer(str(target_path_for_writer))
     if not out or not out.isOpened():
-        raise RuntimeError(f"Cannot open writer: {args.out}")
+        raise RuntimeError(f"Cannot open writer: {target_path_for_writer}")
 
     frame_idx = 0
     applied = 0
@@ -381,9 +461,9 @@ def main():
                 x1, y1, x2, y2 = yolo_bbox_to_xyxy(bbox_norm, W, H)
                 if args.mode == "red":
                     draw_red_box_outline(frame, x1, y1, x2, y2, seg["label"], float(score),
-                                         seg_id=seg["id"], thick=args.box_thick)
+                                         seg_id=seg["id"], thick=int(args.box_thick))
                 else:
-                    draw_blur_box(frame, x1, y1, x2, y2, ksize=args.blur_k)
+                    draw_blur_box(frame, x1, y1, x2, y2, ksize=int(args.blur_k))
                 applied += 1
                 secs[sec][seg["label"]] += 1
 
@@ -394,6 +474,21 @@ def main():
 
     cap.release()
     out.release()
+
+    # --- Audio mux ---
+    if args.keep_audio:
+        audio_src = pathlib.Path(args.audio_src) if args.audio_src else pathlib.Path(args.video)
+        ok = mux_audio_with_ffmpeg(target_path_for_writer, audio_src, out_final, ffmpeg_path=args.ffmpeg_path)
+        if ok:
+            try:
+                os.remove(target_path_for_writer)
+            except Exception:
+                pass
+            log(f"[✓] Ses eklendi → {out_final}")
+        else:
+            log(f"[warn] Ses eklenemedi. Sessiz çıktı tutuldu: {target_path_for_writer}")
+    else:
+        log(f"[i] Ses ekleme devre dışı. Çıktı: {out_final}")
 
     # raporlar
     outp = pathlib.Path(args.out)
