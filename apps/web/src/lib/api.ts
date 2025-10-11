@@ -102,15 +102,20 @@ api.interceptors.response.use(
  *  USER / AUTH (kullanıcı tabanlı)
  *  ================================================================ */
 export const authApi = {
-  async register(email: string, password: string, country?: string | null, age?: number | null) {
-    const body: Record<string, any> = { email, password };
-    if (country) body.country = country;          // ISO-2, örn "TR"
-    if (age !== null && age !== undefined) body.age = age;
+    async register(
+      email: string,
+      password: string,
+      country?: string | null,
+      birthYear?: number | null
+    ) {
+      const body: Record<string, any> = { email, password };
+      if (country) body.country = country;
+      if (birthYear) body.birth_year = birthYear; // ✅ yaş yerine yıl
 
-    const { data } = await api.post("/auth/register", body, {
-      headers: { "Content-Type": "application/json" }
-    });
-    return data;
+      const { data } = await api.post("/auth/register", body, {
+        headers: { "Content-Type": "application/json" },
+      });
+      return data;
   },
 
   async login(email: string, password: string) {
@@ -159,13 +164,13 @@ export const CATEGORIES: Category[] = [
   "alcohol", "blood", "violence", "nudity", "clown", "snake", "spider"
 ];
 
-export type Mode = "blur" | "skip";
+export type Mode = "blur" | "skip" | "none";
 export type EffectiveMode = "blur" | "skip" | "none"; // none = dokunma/oynat
 
 export type PreferencePayload = {
   name?: string;
   // true = sansürleme (oynat), false = sansürle
-  allow_map: Partial<Record<Category, boolean>>;
+  allow_map?: Partial<Record<Category, boolean>>;
   // global fallback (kategori özel seçilmezse)
   mode: Mode;
   // sadece sansürlenecek kategoriler için tip (blur/skip)
@@ -195,7 +200,7 @@ export function sanitizePreferencePayload(s: PreferencePayload): PreferencePaylo
   const filteredModeMap: Partial<Record<Category, Mode>> = {};
   for (const c of CATEGORIES) {
     if (allow_full[c] === false) {
-      filteredModeMap[c] = s.mode_map?.[c] || s.mode || "blur";
+      filteredModeMap[c] = s.mode_map?.[c] ?? s.mode ?? "blur";
     }
   }
   return {

@@ -6,6 +6,6 @@ class UserOut(BaseModel):
     id: UUID
     email: EmailStr
     country: str | None = None
-    age: int | None = None
+    birth_year: int | None = None
     created_at: datetime
     updated_at: datetime

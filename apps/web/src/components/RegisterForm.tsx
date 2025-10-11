@@ -1,103 +1,137 @@
-import { useMemo, useState, useCallback } from "react";
+import { useState, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router-dom"; // ✅ yönlendirme için eklendi
 import { authApi } from "../lib/api";
-import CountrySelect from "./CountrySelect";
-
-interface Props { onSuccess?: () => void; }
+import { Input } from "../components/ui/input";
+import { Button } from "../components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
+import { toast } from "sonner";
+import { countryOptions } from "../lib/worldCountries"; // 🌍 entegre edildi
 
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export default function RegisterForm({ onSuccess }: Props) {
-  const [email, setEmail] = useState<string>("");
-  const [pw, setPw] = useState<string>("");
-  const [country, setCountry] = useState<string | null>(null); // ISO-2
-  const [age, setAge] = useState<number | "">("");
-  const [msg, setMsg] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
+export default function RegisterForm() {
+  const navigate = useNavigate(); // ✅ yönlendirme hook'u
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [country, setCountry] = useState<string | null>(null);
+  const [birthYear, setBirthYear] = useState<string | "">("");
+  const [loading, setLoading] = useState(false);
 
-  const ages = useMemo(() => Array.from({ length: 100 }, (_, i) => i + 1), []);
+  const years = useMemo(
+    () => Array.from({ length: 101 }, (_, i) => 2025 - i).filter((y) => y >= 1925),
+    []
+  );
 
   const validate = useCallback((): string | null => {
-    const e = email.trim();
-    if (!e) return "E-posta gerekli";
-    if (!emailRe.test(e)) return "Geçerli bir e-posta girin";
+    if (!email.trim()) return "E-posta gerekli";
+    if (!emailRe.test(email.trim())) return "Geçerli bir e-posta girin";
     if (pw.length < 8) return "Parola en az 8 karakter olmalı";
     return null;
   }, [email, pw]);
 
   const submit = async () => {
     if (loading) return;
-    setMsg(null);
-
     const v = validate();
-    if (v) { setMsg(v); return; }
+    if (v) {
+      toast.error(v);
+      return;
+    }
 
     try {
       setLoading(true);
       await authApi.register(
         email.trim(),
         pw,
-        country,                         // "TR" | null
-        age === "" ? null : Number(age)  // 1..100 | null
+        country,
+        birthYear ? Number(birthYear) : null
       );
-      setMsg("Kayıt başarılı ✓ şimdi giriş yapabilirsiniz");
-      onSuccess?.();
+      toast.success("Kayıt başarılı 🎉 Şimdi giriş yapabilirsiniz.");
+      navigate("/login"); // ✅ başarılı olunca login sayfasına yönlendir
     } catch (e: any) {
       const d = e?.response?.data;
-      setMsg(
+      toast.error(
         d?.detail === "email_in_use"
           ? "Bu e-posta zaten kayıtlı"
-          : (typeof d?.detail === "string" ? d.detail : "Kayıt başarısız")
+          : typeof d?.detail === "string"
+          ? d.detail
+          : "Kayıt başarısız"
       );
     } finally {
       setLoading(false);
     }
   };
 
-  const onKeyDown: React.KeyboardEventHandler<HTMLDivElement> = (ev) => {
-    if (ev.key === "Enter") { ev.preventDefault(); submit(); }
-  };
-
   return (
-    <div style={{ display:"grid", gap:10 }} onKeyDown={onKeyDown}>
-      <label>E-posta</label>
-      <input
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        placeholder="you@example.com"
-        inputMode="email"
-        autoComplete="email"
-        style={{ padding: 8 }}
-      />
-
-      <label>Parola</label>
-      <input
-        type="password"
-        value={pw}
-        onChange={(e) => setPw(e.target.value)}
-        placeholder="En az 8 karakter"
-        autoComplete="new-password"
-        style={{ padding: 8 }}
-      />
-
-      <label>Ülke (opsiyonel)</label>
-      <CountrySelect value={country} onChange={setCountry} />
-
-      <label>Yaş (opsiyonel)</label>
-      <select
-        value={age}
-        onChange={(e) => setAge(e.target.value === "" ? "" : Number(e.target.value))}
-        style={{ padding: 8 }}
-      >
-        <option value="">Seçiniz</option>
-        {ages.map((a) => <option key={a} value={a}>{a}</option>)}
-      </select>
-
-      <div style={{ display:"flex", gap:8, alignItems:"center", marginTop:6 }}>
-        <button onClick={submit} disabled={loading}>
-          {loading ? "Kaydediliyor..." : "Kayıt Ol"}
-        </button>
-        {msg && <span style={{ color: msg.includes("başarılı") ? "green" : "#c33" }}>{msg}</span>}
+    <div className="space-y-4 animate-fade-in">
+      {/* E-posta */}
+      <div>
+        <label className="text-sm text-muted-foreground">E-posta</label>
+        <Input
+          type="email"
+          placeholder="you@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
       </div>
+
+      {/* Parola */}
+      <div>
+        <label className="text-sm text-muted-foreground">Parola</label>
+        <Input
+          type="password"
+          placeholder="En az 8 karakter"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+        />
+      </div>
+
+      {/* Ülke Seçimi */}
+      <div>
+        <label className="text-sm text-muted-foreground">Ülke (opsiyonel)</label>
+        <Select value={country ?? ""} onValueChange={setCountry}>
+          <SelectTrigger>
+            <SelectValue placeholder="Ülke seçiniz" />
+          </SelectTrigger>
+          <SelectContent className="bg-card text-foreground max-h-60 overflow-y-auto">
+            {countryOptions.map((c) => (
+              <SelectItem key={c.value} value={c.value}>
+                <span className="flex items-center gap-2">
+                  <span>{c.emoji}</span>
+                  <span>{c.label}</span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Doğum Yılı */}
+      <div>
+        <label className="text-sm text-muted-foreground">Doğum Yılı</label>
+        <Select value={birthYear} onValueChange={setBirthYear}>
+          <SelectTrigger>
+            <SelectValue placeholder="Seçiniz" />
+          </SelectTrigger>
+          <SelectContent className="bg-card text-foreground max-h-60 overflow-y-auto">
+            {years.map((y) => (
+              <SelectItem key={y} value={String(y)}>
+                {y}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Kayıt Butonu */}
+      <Button className="w-full mt-2" onClick={submit} disabled={loading}>
+        {loading ? "Kaydediliyor..." : "Kayıt Ol"}
+      </Button>
     </div>
   );
 }
