@@ -110,7 +110,8 @@ class PreferenceProfile(Base):
         nullable=False, default=RedactMode.blur
     )
     extras = Column(JSONType, nullable=False, server_default=PG_JSONB_EMPTY())
-
+    allow_map = Column(JSONType, nullable=False, server_default=PG_JSONB_EMPTY())
+    mode_map  = Column(JSONType, nullable=False, server_default=PG_JSONB_EMPTY())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     user = relationship("User", back_populates="profiles")
@@ -231,4 +232,27 @@ class RedactionPlan(Base):
     __table_args__ = (
         UniqueConstraint("video_id", "profile_hash", name="uq_plan_video_hash"),
         Index("idx_plan_video_hash", "video_id", "profile_hash"),
+    )
+
+
+# --- NEW: outputs (cache için) ---
+class Output(Base):
+    __tablename__ = "outputs"
+
+    id = Column(
+        UUIDType,
+        primary_key=True,
+        server_default=PG_UUID_DEFAULT(),
+        default=(None if is_postgres else uuid.uuid4),
+    )
+    video_id = Column(UUIDType, ForeignKey("video_assets.id", ondelete="CASCADE"), nullable=False)
+    profile_hash = Column(Text, nullable=False)
+    format = Column(Text, nullable=False)                 # ör: "mp4"
+    storage_key = Column(Text, nullable=False, unique=True)
+    size_bytes = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("video_id", "profile_hash", "format", name="outputs_video_id_profile_hash_format_key"),
+        Index("idx_outputs_video_profile", "video_id", "profile_hash"),
     )
