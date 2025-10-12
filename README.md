@@ -1,9 +1,8 @@
-# Censorly Demo — Project Skeleton (SOLID & Modular)
+# Censorly Demo — Project Skeleton 
 
 **Amaç:** Dizi/film platformu içeriklerine sansür uygulayabilen demo web sitesi.
 Bu iskelet; *FastAPI (API)*, *React+TS (Web)*, *Worker (arka plan)* ve *AI/Inference* katmanlarını ayırır.
 
-> Not: Tüm sınıf dosyaları şu an **yalnızca yorum/doküman** içerir. İçerikleri adım adım dolduracaksınız.
 
 ## Teknoloji Önerileri
 - Backend: FastAPI (Python 3.12+), SQLAlchemy + Alembic
@@ -12,12 +11,6 @@ Bu iskelet; *FastAPI (API)*, *React+TS (Web)*, *Worker (arka plan)* ve *AI/Infer
 - DB: Geliştirmede SQLite, üretimde PostgreSQL önerilir
 - Video işleme: FFmpeg
 - Modeller: YOLO (best.pt dosyaları `ai/models/` altında)
-
-## Hızlı Başlangıç
-1) `ai/models/` içine `best.pt` dosyalarınızı koyun (alkol, kan, şiddet, fobik, müstehcenlik).
-2) `notebooks/` klasörüne eğitim `.ipynb` dosyalarınızı kopyalayın.
-3) `.env` örneklerini `configs/*.env.sample` içinden alın, gerçek `.env` dosyalarınızı oluşturun.
-4) Dilerseniz `docker/` altındaki compose dosyasıyla servisleri ayağa kaldırın (şimdilik placeholder).
 
 ## Dizin Yapısı (özet)
 - **apps/**

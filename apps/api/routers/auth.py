@@ -32,7 +32,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(auth_sc
         raise HTTPException(status_code=401, detail="wrong_token_type")
     _ensure_not_blacklisted(redis, payload["jti"])
     row = db.execute(
-        text("SELECT id,email,country,age,created_at,updated_at FROM users WHERE id=:id"),
+        text("SELECT id,email,country,birth_year,created_at,updated_at FROM users WHERE id=:id"),
         {"id": payload["sub"]}
     ).mappings().first()
     if not row:
@@ -53,7 +53,7 @@ def ratelimit(redis, key: str, limit:int=5, window:int=60):
 def register(body: RegisterIn, db: Session = Depends(get_db), repo: UserRepo = Depends(get_user_repo)):
     if repo.get_by_email(body.email):
         raise HTTPException(status_code=400, detail="email_in_use")
-    user = repo.create_user(body.email, hash_password(body.password), body.country, body.age)
+    user = repo.create_user(body.email, hash_password(body.password), body.country, body.birth_year)
     return UserOut(**user)
 
 @router.post("/login", response_model=TokenPair)
