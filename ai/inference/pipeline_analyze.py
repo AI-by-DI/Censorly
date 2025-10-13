@@ -36,7 +36,7 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
     }
     conf_by_label = {
         "violence": 0.4, "blood": 0.15,
-        "Clown": 0.2, "Spider": 0.1, "Snake": 0.1, "alcohol": 0.1,
+         "alcohol": 0.25,"phobic":0.1
     }
     detectors = []
     for label, path in mapping.items():

@@ -1,54 +1,33 @@
-# apps/api/services/redaction_service.py
 from __future__ import annotations
 from typing import Optional, Dict, List
 from datetime import datetime
-import json
-import hashlib
-import os
-import subprocess
+import json, hashlib, os, subprocess, tempfile
 
-from sqlalchemy import select, and_, desc, func
+from sqlalchemy import select, and_, desc
 from sqlalchemy.orm import Session
 
 from data.schema import (
-    User, PreferenceProfile, VideoAsset, AnalysisJob, DetectionEvent,
-    RedactionPlan, Output
+    PreferenceProfile, VideoAsset, AnalysisJob, DetectionEvent, RedactionPlan
 )
 
-# ---- Konfig / yardımcılar ----
-
 CAT_KEYS = ["alcohol", "blood", "violence", "phobic", "obscene"]
-
 DEFAULT_THRESH = 0.40
 DEFAULT_BLUR = {"blur_k": 61, "box_thick": 4, "hold_gap_ms": 600, "grace_ms": 200}
 
-# Çıkış nereye yazılacak?
-# - MinIO kullanıyorsan: OUT_PREFIX = "minio://<bucket-name>/redacted"
-# - Yerel/statik ise:    OUT_PREFIX = "uploads/redacted"
-OUT_PREFIX = os.getenv("REDacted_OUT_PREFIX", "uploads/redacted")
+OUT_PREFIX = os.getenv("REDACT_OUT_PREFIX", "uploads/redacted").rstrip("/")
+JOBS_JSONL_PREFIX = os.getenv("JOBS_JSONL_PREFIX", "uploads/jobs").strip("/")
+APP_ROOT = os.getenv("APP_ROOT", "/app")
 
-# JSONL nerede? (analiz sonrası)
-# ör: /uploads/jobs/<job_id>/jsonl
-JOBS_JSONL_PREFIX = os.getenv("JOBS_JSONL_PREFIX", "uploads/jobs")
-
-# stream_url üretimi:
 def make_stream_url(storage_key: str) -> str:
-    # minio://... ise imzalı URL mantığın varsa burada uygulayabilirsin.
     if storage_key.startswith("minio://"):
-        # TODO: minio presign entegrasyonun varsa buraya koy
-        return storage_key  # şimdilik düz döndürüyoruz
-    # aksi halde statik dosya servisinden path
+        return storage_key
     return "/" + storage_key.lstrip("/")
 
 def profile_to_dict(p: PreferenceProfile) -> dict:
-    # p.mode Enum da olabilir string de → güvenli okuma
     mode_val = p.mode.value if getattr(p.mode, "value", None) is not None else (p.mode or "blur")
-
-    # ORM’de kolonlar yoksa extras içinden dene; o da yoksa {}
     ex = p.extras or {}
     allow_map = getattr(p, "allow_map", None) or ex.get("allow_map", {}) or {}
     mode_map  = getattr(p, "mode_map",  None) or ex.get("mode_map",  {}) or {}
-
     return {
         "mode": mode_val,
         "allow_flags": {
@@ -62,7 +41,7 @@ def profile_to_dict(p: PreferenceProfile) -> dict:
         "mode_map":  mode_map,
         "extras":    ex,
     }
-    
+
 def compute_profile_hash(d: Dict) -> str:
     blob = json.dumps(d, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:24]
@@ -72,17 +51,14 @@ def blocked_categories(profile_dict: Dict) -> List[str]:
     flags = profile_dict["allow_flags"]
     out: List[str] = []
     for ck in CAT_KEYS:
-        flag_name = f"allow_{ck}"
-        base_allow = flags.get(flag_name, True)
-        override = amap.get(ck, None)
-        allow = override if override is not None else base_allow
+        allow = amap.get(ck, flags.get(f"allow_{ck}", True))
         if allow is False:
             out.append(ck)
     return out
 
 def thresholds_from_profile(profile_dict: Dict) -> Dict[str, float]:
     ex = profile_dict.get("extras") or {}
-    th = ex.get("thresholds") or {}  # {"blood":0.2,"alcohol":0.5}
+    th = ex.get("thresholds") or {}
     per = {k: float(v) for k, v in th.items()}
     per.setdefault("default", DEFAULT_THRESH)
     return per
@@ -90,8 +66,7 @@ def thresholds_from_profile(profile_dict: Dict) -> Dict[str, float]:
 def blur_params_from_profile(profile_dict: Dict) -> Dict:
     ex = profile_dict.get("extras") or {}
     blur = ex.get("blur_params") or {}
-    merged = {**DEFAULT_BLUR, **{k:int(v) for k,v in blur.items()}}
-    return merged
+    return {**DEFAULT_BLUR, **{k:int(v) for k,v in blur.items()}}
 
 def get_latest_done_job(db: Session, video_id: str) -> Optional[AnalysisJob]:
     q = (
@@ -102,31 +77,54 @@ def get_latest_done_job(db: Session, video_id: str) -> Optional[AnalysisJob]:
     )
     return db.execute(q).scalars().first()
 
-# ---- Ana işlev ----
+def _jsonl_abs(job_id: str) -> str:
+    return os.path.join(APP_ROOT, JOBS_JSONL_PREFIX, job_id, "jsonl")
+
+def _jsonl_from_db(db: Session, job_id: str) -> str:
+    rows = db.execute(
+        select(DetectionEvent)
+        .where(DetectionEvent.job_id == job_id)
+        .order_by(DetectionEvent.ts_ms.asc())
+    ).scalars().all()
+    tmp = tempfile.NamedTemporaryFile(prefix=f"jsonl_{job_id}_", delete=False)
+    path = tmp.name
+    tmp.close()
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps({
+                "ts_ms": int(r.ts_ms),
+                "label": getattr(r.label, "value", r.label),
+                "score": float(r.score),
+                "bbox":  getattr(r, "bbox", None) or None,
+                "track_id": getattr(r, "track_id", None),
+            }, ensure_ascii=False) + "\n")
+    return path
 
 def render_or_get(db: Session, user_id: str, video_id: str, profile_id: Optional[str] = None) -> Dict:
     # 1) profil
     if profile_id:
         prof = db.get(PreferenceProfile, profile_id)
     else:
-        q = (
+        prof = (db.execute(
             select(PreferenceProfile)
             .where(PreferenceProfile.user_id == user_id)
             .order_by(desc(PreferenceProfile.updated_at))
             .limit(1)
-        )
-        prof = db.execute(q).scalars().first()
+        ).scalars().first())
     if not prof:
         raise ValueError("Preference profile not found.")
 
     p_dict = profile_to_dict(prof)
     p_hash = compute_profile_hash(p_dict)
     blocked = blocked_categories(p_dict)
+
+    # video
+    vid = db.get(VideoAsset, video_id)
+    if not vid:
+        raise ValueError("Video not found.")
+
+    # sansür yoksa orijinali dön
     if not blocked:
-        # Hiçbir şey sansürlenmiyor → orijinal video
-        vid = db.get(VideoAsset, video_id)
-        if not vid:
-            raise ValueError("Video not found.")
         return {
             "cached": True,
             "profile_hash": p_hash,
@@ -136,60 +134,36 @@ def render_or_get(db: Session, user_id: str, video_id: str, profile_id: Optional
             "output_id": None,
         }
 
-    # 2) outputs cache
-    q_out = (
-        select(Output)
-        .where(and_(Output.video_id == video_id, Output.profile_hash == p_hash, Output.format == "mp4"))
-        .limit(1)
-    )
-    out_row = db.execute(q_out).scalars().first()
-    if out_row:
-        return {
-            "cached": True,
-            "profile_hash": p_hash,
-            "storage_key": out_row.storage_key,
-            "stream_url": make_stream_url(out_row.storage_key),
-            "plan_id": None,
-            "output_id": str(out_row.id),
-        }
-
     # 3) analiz job
     job = get_latest_done_job(db, video_id)
     if not job:
         raise ValueError("No completed analysis job for this video.")
 
-    # 4) plan (var mı?)
-    q_plan = (
+    # 4) plan
+    plan = (db.execute(
         select(RedactionPlan)
         .where(and_(RedactionPlan.video_id == video_id, RedactionPlan.profile_hash == p_hash))
         .limit(1)
-    )
-    plan = db.execute(q_plan).scalars().first()
+    ).scalars().first())
 
-    thr_map = thresholds_from_profile(p_dict)  # {"default":0.4,"blood":0.2,...}
+    thr_map = thresholds_from_profile(p_dict)
     blur = blur_params_from_profile(p_dict)
 
     if not plan:
-        # detection_events → filtrele
-        q_ev = (
+        rows = (db.execute(
             select(DetectionEvent)
-            .where(
-                and_(
-                    DetectionEvent.job_id == job.id,
-                    DetectionEvent.label.in_(blocked),
-                    DetectionEvent.score >= 0.0,  # eşiği uygulama tarafında uygulayacağız
-                )
-            )
+            .where(DetectionEvent.job_id == job.id)
             .order_by(DetectionEvent.ts_ms)
-        )
-        rows = db.execute(q_ev).scalars().all()
+        ).scalars().all())
 
-        # eşiğe göre işaretler
         markers = []
         for r in rows:
-            mthr = float(thr_map.get(r.label, thr_map["default"]))
+            lab = getattr(r.label, "value", r.label)
+            if lab not in blocked:
+                continue
+            mthr = float(thr_map.get(lab, thr_map["default"]))
             if float(r.score) >= mthr:
-                markers.append({"t": int(r.ts_ms), "label": r.label, "score": float(r.score)})
+                markers.append({"t": int(r.ts_ms), "label": lab, "score": float(r.score)})
 
         plan = RedactionPlan(
             video_id=video_id,
@@ -209,63 +183,59 @@ def render_or_get(db: Session, user_id: str, video_id: str, profile_id: Optional
         db.commit()
         db.refresh(plan)
 
-    # 5) çıktı üret
-    out_key = f"{OUT_PREFIX.rstrip('/')}/{video_id}/{p_hash}.mp4"
-    os.makedirs(os.path.dirname(out_key), exist_ok=True) if not out_key.startswith("minio://") else None
+    # 5) çıktı üret (dosyaya)
+    out_key = f"{OUT_PREFIX}/{video_id}/{p_hash}.mp4"
+    if not out_key.startswith("minio://"):
+        os.makedirs(os.path.dirname(out_key), exist_ok=True)
 
-    # min_score_map stringle
+    # JSONL
+    jsonl_path = _jsonl_abs(str(job.id))
+    if not os.path.exists(jsonl_path):
+        jsonl_path = _jsonl_from_db(db, str(job.id))
+
+    # video kaynağı
+    video_arg = vid.storage_key
+
+    # min_score_map
     min_map = plan.plan.get("min_score_map", {"default": DEFAULT_THRESH})
     min_map_str = ",".join([f"{k}:{float(v):.2f}" for k, v in min_map.items()])
+
+    # SADECE engellenen etiketleri işle
+    labels_arg = ",".join(blocked) if blocked else ""
 
     blur_k = int(plan.plan.get("blur_params", {}).get("blur_k", DEFAULT_BLUR["blur_k"]))
     box_thick = int(plan.plan.get("blur_params", {}).get("box_thick", DEFAULT_BLUR["box_thick"]))
     hold_gap_ms = int(plan.plan.get("blur_params", {}).get("hold_gap_ms", DEFAULT_BLUR["hold_gap_ms"]))
     grace_ms = int(plan.plan.get("blur_params", {}).get("grace_ms", DEFAULT_BLUR["grace_ms"]))
 
-    jsonl_path = f"{JOBS_JSONL_PREFIX.rstrip('/')}/{job.id}/jsonl"
-    # Eğer JSONL MinIO’da ise burada minio:// prefix kullan
-    if os.path.exists(jsonl_path) or not jsonl_path.startswith("minio://"):
-        jsonl_arg = jsonl_path
-    else:
-        jsonl_arg = f"minio://{jsonl_path}"
-
-    # video kaynağı: VideoAsset.storage_key’i kullan
-    vid = db.get(VideoAsset, video_id)
-    if not vid:
-        raise ValueError("Video not found.")
-
-    video_arg = vid.storage_key if vid.storage_key.startswith("minio://") else os.path.join("", vid.storage_key)
+    # opsiyonel dinamik eşik dosyası
+    ex = p_dict.get("extras") or {}
+    thresholds_json_path = ex.get("thresholds_json_path") or ""
+    dyn_from_json = ex.get("dyn_from_json") or "blood,alcohol"
 
     cmd = [
         "python", "-m", "ai.inference.pipeline_redact",
         "--video", video_arg,
-        "--jsonl", jsonl_arg,
+        "--jsonl", jsonl_path,
         "--out", out_key,
+        "--labels", labels_arg,
         "--min_score_map", min_map_str,
         "--hold_gap_ms", str(hold_gap_ms),
         "--grace_ms", str(grace_ms),
         "--mode", "blur",
         "--blur_k", str(blur_k),
         "--box_thick", str(box_thick),
-        "--keep_audio"
+        "--keep_audio",
+        "--min_keyframes_map", "default:1",
     ]
+    if thresholds_json_path and os.path.exists(thresholds_json_path):
+        cmd += ["--thresholds_json", thresholds_json_path, "--dyn_from_json", str(dyn_from_json)]
 
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"redact pipeline failed: {e}")
-
-    new_out = Output(
-        video_id=video_id,
-        profile_hash=p_hash,
-        format="mp4",
-        storage_key=out_key,
-        size_bytes=None,
-        created_at=datetime.utcnow(),
-    )
-    db.add(new_out)
-    db.commit()
-    db.refresh(new_out)
+        err = (e.stderr or b"").decode(errors="ignore")
+        raise RuntimeError(f"redact pipeline failed: {err[:600]}")
 
     return {
         "cached": False,
@@ -273,5 +243,5 @@ def render_or_get(db: Session, user_id: str, video_id: str, profile_id: Optional
         "storage_key": out_key,
         "stream_url": make_stream_url(out_key),
         "plan_id": str(plan.id),
-        "output_id": str(new_out.id),
+        "output_id": None,
     }
