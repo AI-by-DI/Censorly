@@ -1,10 +1,10 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Play } from "lucide-react";
 import { Button } from "./ui/button";
 import MovieCard from "./MovieCard";
 import { useRef } from "react";
 
-interface Movie {
-  id: number;
+export interface Movie {
+  id: string | number;
   title: string;
   image: string;
   warnings?: string[];
@@ -13,9 +13,10 @@ interface Movie {
 interface CategoryRowProps {
   title: string;
   movies: Movie[];
+  onPlay?: (movie: Movie) => void;
 }
 
-const CategoryRow = ({ title, movies }: CategoryRowProps) => {
+const CategoryRow = ({ title, movies, onPlay }: CategoryRowProps) => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const scroll = (direction: "left" | "right") => {
@@ -38,15 +39,27 @@ const CategoryRow = ({ title, movies }: CategoryRowProps) => {
           <ChevronLeft className="w-8 h-8" />
         </Button>
 
-        <div 
-          ref={scrollRef}
-          className="flex gap-4 overflow-x-auto scrollbar-hide px-8 scroll-smooth"
-        >
-          {movies.map((movie) => (
-            <div key={movie.id} className="flex-shrink-0 w-48">
-              <MovieCard {...movie} />
-            </div>
-          ))}
+        <div ref={scrollRef} className="flex gap-4 overflow-x-auto scrollbar-hide px-8 scroll-smooth">
+          {movies.map((movie) => {
+            const idStr = String(movie.id);
+            return (
+              <div key={idStr} className="flex-shrink-0 w-48 relative group/item">
+                <MovieCard
+                  id={idStr}
+                  title={movie.title}
+                  image={movie.image}
+                  warnings={movie.warnings}
+                />
+                <Button
+                  size="icon"
+                  className="absolute inset-x-0 bottom-3 mx-auto opacity-0 group-hover/item:opacity-100 transition-opacity bg-primary hover:bg-primary/80"
+                  onClick={() => onPlay?.(movie)}
+                >
+                  <Play className="w-5 h-5" />
+                </Button>
+              </div>
+            );
+          })}
         </div>
 
         <Button

@@ -40,6 +40,7 @@ BASE_LABEL_THRESHOLDS: Dict[str, float] = {
 }
 
 _PHOBIC_CANON = {"clown": "Clown", "spider": "Spider", "snake": "Snake"}
+_PHOBIC_CANON_SET = set(_PHOBIC_CANON.values())
 
 def _get_profile(db: Session, current_user_id: str, profile_id: Optional[str]):
     if profile_id:
@@ -137,28 +138,50 @@ def _build_jsonl_from_db(db: Session, job_id: str) -> str:
     log.warning(f"[stream] JSONL not found on disk → generating from DB: job_id={job_id}")
     return path
 
-def _canon_phobic_name(s: str) -> Optional[str]:
-    if not s: return None
-    return _PHOBIC_CANON.get(str(s).strip().lower())
+def _canon_phobic_name(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    s = str(s).strip().lower()
+    # "phobic/clown" gibi değerleri de yakala
+    if s.startswith("phobic/"):
+        s = s.split("/", 1)[-1]
+    return _PHOBIC_CANON.get(s)
 
-def _discover_phobic_sublabels(db: Session, job_id: str) -> List[str]:
+def _canon_from_label_or_extra(label: str, extra: dict | None) -> Optional[str]:
+    """
+    Hem label'dan hem de extra.raw_label/subtype'dan kanonik ismi bul.
+    """
+    # 1) label doğrudan "Clown/Spider/Snake" ise
+    if str(label) in _PHOBIC_CANON_SET:
+        return str(label)
+    # 2) label küçük/büyük veya "clown" vb ise
+    by_label = _canon_phobic_name(label)
+    if by_label:
+        return by_label
+    # 3) raw_label / subtype üzerinden
+    if isinstance(extra, dict):
+        raw = extra.get("raw_label") or extra.get("rawLabel") or extra.get("subtype")
+        by_extra = _canon_phobic_name(raw)
+        if by_extra:
+            return by_extra
+    return None
+
+def _discover_phobic_sublabels(db: Session, job_id: str) -> list[str]:
     rows = db.execute(
         select(DetectionEvent)
         .where(DetectionEvent.job_id == job_id)
         .order_by(DetectionEvent.ts_ms.asc())
     ).scalars().all()
-    found: List[str] = []
+
+    found: list[str] = []
     for r in rows:
         lab = getattr(r.label, "value", r.label)
-        if str(lab).lower() != "phobic":
-            continue
         extra = getattr(r, "extra", None) or getattr(r, "extras", None) or {}
-        raw = None
-        if isinstance(extra, dict):
-            raw = extra.get("raw_label") or extra.get("rawLabel") or extra.get("subtype")
-        canon = _canon_phobic_name(raw)
+        canon = _canon_from_label_or_extra(lab, extra)
         if canon:
             found.append(canon)
+
+    # uniq + sıralı
     uniq = sorted(list(dict.fromkeys(found)))
     return uniq
 
