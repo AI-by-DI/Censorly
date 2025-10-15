@@ -3,11 +3,10 @@ services:
     image: postgres:16-alpine
     container_name: censorly_db
     environment:
-      POSTGRES_USER: censorly
-      POSTGRES_PASSWORD: censorly
-      POSTGRES_DB: censorly
-    ports:
-      - "55432:5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # ports: ["55432:5432"]   # Sadece dışarıdan bağlanacaksan aç
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
@@ -15,8 +14,16 @@ services:
   redis:
     image: redis:7-alpine
     container_name: censorly_redis
-    ports:
-      - "6379:6379"
+    # Güvenlik: requirepass ayarla ve dış portu kapalı tut
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD}",
+      ]
+    # ports: ["6379:6379"]    # Gerekliyse aç
     volumes:
       - redisdata:/data
     restart: unless-stopped
@@ -26,11 +33,11 @@ services:
     container_name: censorly_minio
     command: server /data --console-address ":9101"
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio12345
-    ports:
-      - "9100:9000" # S3 API
-      - "9101:9101" # Console
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    # ports:
+    #   - "9100:9000"  # S3 API, gerekliyse aç
+    #   - "9101:9101"  # Console, gerekliyse aç
     volumes:
       - miniodata:/data
     restart: unless-stopped
@@ -46,8 +53,7 @@ services:
       - db
       - redis
       - minio
-    ports:
-      - "8100:8000"
+    ports: ["8100:8000"]
     restart: unless-stopped
     command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
 
@@ -55,20 +61,10 @@ services:
     build:
       context: ..
       dockerfile: docker/web.Dockerfile
-      # (isteğe bağlı) Vite build'ine API adresini arg olarak geçirmek istersen:
-      # args:
-      #   - VITE_API_URL=http://194.146.50.83:8100
     container_name: censorly_web
-    depends_on:
-      - api
-    environment:
-      - VITE_API_URL=http://194.146.50.83:8100 # frontend’in API’ye vuracağı adres
-    ports:
-      - "8101:3000"
+    depends_on: [api]
+    ports: ["8101:80"]
     restart: unless-stopped
-    # build edip çıkmak yerine gerçekten servis et:
-    command:
-      ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "3000"]
 
   worker:
     build:
@@ -81,8 +77,8 @@ services:
       - db
       - redis
       - minio
-    working_dir: /app/apps/worker # doğru dizin
-    command: ["python", "main.py"] # doğru entry
+    working_dir: /app
+    command: ["python", "apps/worker/main.py"]
     restart: unless-stopped
 
 volumes:
