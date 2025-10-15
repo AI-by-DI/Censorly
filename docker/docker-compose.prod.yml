@@ -65,7 +65,7 @@ services:
     depends_on: [api]
     ports: ["8101:80"]
     restart: unless-stopped
-
+'''
   worker:
     build:
       context: ..
@@ -80,6 +80,7 @@ services:
     working_dir: /app
     command: ["python", "apps/worker/main.py"]
     restart: unless-stopped
+'''
 
 volumes:
   pgdata:
