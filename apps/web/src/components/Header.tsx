@@ -28,29 +28,32 @@ const Header = () => {
           </div>
 
           {/* Sansür modu butonu (görsel olarak belirgin) */}
-          <Button
-            variant={enabled ? "default" : "outline"}
-            className={cn(
-              "flex items-center gap-2 rounded-full px-4 py-2 transition-colors text-sm font-medium shadow-md",
-              enabled
-                ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                : "bg-transparent border border-border hover:bg-muted/40"
-            )}
-            onClick={toggle}
-            title={enabled ? "Censor Mode is ON" : "Censor Mode is OFF"}
-          >
-            {enabled ? (
-              <>
-                <Eye className="w-4 h-4" />
-                Censor Mode: <span className="font-semibold text-green-200">ON</span>
-              </>
-            ) : (
-              <>
-                <EyeOff className="w-4 h-4" />
-                Censor Mode: <span className="font-semibold text-red-400">OFF</span>
-              </>
-            )}
-          </Button>
+         <Button
+  variant={enabled ? "default" : "outline"}
+  className={cn(
+    "flex items-center gap-2 rounded-full px-4 py-2 transition-all text-sm font-medium shadow-md",
+    enabled
+      ? "bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black shadow-md shadow-amber-900/30"
+      : "bg-transparent border border-border text-muted-foreground hover:bg-muted/40"
+  )}
+  onClick={toggle}
+  title={enabled ? "Censor Mode is ON" : "Censor Mode is OFF"}
+>
+  {enabled ? (
+    <>
+      <Eye className="w-4 h-4 text-black/80" />
+      <span className="font-semibold">Censor Mode: </span>
+      <span className="font-semibold text-black">ON</span>
+    </>
+  ) : (
+    <>
+      <EyeOff className="w-4 h-4 text-muted-foreground" />
+      <span className="font-semibold">Censor Mode: </span>
+      <span className="font-semibold text-red-400">OFF</span>
+    </>
+  )}
+</Button>
+
 
           {/* Profil butonu */}
           <Link to="/profile">

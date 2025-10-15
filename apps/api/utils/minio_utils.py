@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import os
 import tempfile
@@ -14,9 +13,9 @@ MINIO_ACCESS_KEY       = os.getenv("MINIO_ACCESS_KEY", "minio")
 MINIO_SECRET_KEY       = os.getenv("MINIO_SECRET_KEY", "minio12345")
 MINIO_SECURE           = str(os.getenv("MINIO_SECURE", "false")).lower() == "true"
 MINIO_DEFAULT_BUCKET   = os.getenv("MINIO_DEFAULT_BUCKET", "videos")
-# Presigned URL'leri dışarıya uygun host ile döndürmek için
-MINIO_PUBLIC_ENDPOINT  = os.getenv("MINIO_PUBLIC_ENDPOINT", "http://localhost:9000")  # örn: http://localhost:9000
-MINIO_REGION           = os.getenv("MINIO_REGION", "us-east-1")  
+# Dışarı servis ederken kullanılacak public host (örn: http://localhost:9000)
+MINIO_PUBLIC_ENDPOINT  = os.getenv("MINIO_PUBLIC_ENDPOINT", "http://localhost:9000")
+MINIO_REGION           = os.getenv("MINIO_REGION", "us-east-1")
 
 # ---- Client ----
 def get_minio() -> Minio:
@@ -25,7 +24,16 @@ def get_minio() -> Minio:
         access_key=MINIO_ACCESS_KEY,
         secret_key=MINIO_SECRET_KEY,
         secure=MINIO_SECURE,
-        region=MINIO_REGION,       
+        region=MINIO_REGION,
+    )
+
+def _client_for(endpoint: str, access_key: str, secret_key: str, secure: bool) -> Minio:
+    return Minio(
+        endpoint,
+        access_key=access_key,
+        secret_key=secret_key,
+        secure=secure,
+        region=MINIO_REGION,
     )
 
 # ---- URL helpers ----
@@ -45,13 +53,13 @@ def parse_minio_url(s: str) -> Tuple[str, str]:
 
 def _rewrite_host(url: str, public_base: str) -> str:
     """
-    MinIO presigned URL'sini dış host ile yeniden yazar.
-    Örn: http://minio:9000/... -> http://localhost:9000/...
+    İmzalanmış URL'yi farklı bir host ile yeniden yazmak istersen kullan.
+    Bu projede presign'ı zaten public endpoint ile ürettiğimiz için gerek kalmıyor.
     """
     if not public_base:
         return url
     pub = urlsplit(public_base)
-    if not (pub.netloc):  # public_base "http://host:port" veya "https://..." olmalı
+    if not pub.netloc:  # "http://host:port" beklenir
         return url
     u = urlsplit(url)
     scheme = pub.scheme or u.scheme
@@ -87,34 +95,28 @@ def fget_minio_to_temp(bucket: str, object_name: str, suffix: str = "") -> str:
     cli.fget_object(bucket, object_name, tmp_path)
     return tmp_path
 
-def _client_for(endpoint: str, access_key: str, secret_key: str, secure: bool) -> Minio:
-    return Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure,region=MINIO_REGION,)
-
 # ---- Presigned ----
 def presigned_get(bucket: str, object_name: str, expires: Union[int, timedelta] = 3600) -> str:
     """
     expires: saniye (int) ya da datetime.timedelta
-    Public endpoint verilmişse, presign'ı o host ile üret (rewrite yapma).
+    Public endpoint verilmişse, presign'ı o host ile üret.
     """
-    # expires normalize
     exp_td = timedelta(seconds=expires) if isinstance(expires, int) else expires
 
-    # Public endpoint varsa onunla imzala
     if MINIO_PUBLIC_ENDPOINT:
         u = urlsplit(MINIO_PUBLIC_ENDPOINT)  # örn: http://localhost:9000
-        if not u.scheme or not u.netloc:
-            # fallback: yanlış verilmişse normal client ile devam
-            cli = get_minio()
-        else:
+        if u.scheme and u.netloc:
             cli = _client_for(
                 endpoint=u.netloc,
                 access_key=MINIO_ACCESS_KEY,
                 secret_key=MINIO_SECRET_KEY,
                 secure=(u.scheme == "https"),
             )
+        else:
+            cli = get_minio()
         return cli.presigned_get_object(bucket, object_name, expires=exp_td)
 
-    # Aksi halde iç endpoint ile imzala (rewrite yok)
+    # public endpoint yoksa iç endpointten üret
     cli = get_minio()
     return cli.presigned_get_object(bucket, object_name, expires=exp_td)
 
@@ -138,16 +140,39 @@ def resolve_source_to_local(storage_key: str, default_suffix: str = ".mp4") -> T
     raise FileNotFoundError(f"Video source not accessible: {storage_key}")
 
 def upload_redacted_and_presign(
-    local_path: str,
+    local_path: Optional[str],
     src_storage_key: str,
     video_id: str,
     ttl_hours: int = 3,
+    existing_object: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, str]:
     """
-    Redacted dosyayı MinIO'ya yükler ve presigned URL döndürür.
-    Kaynakla aynı bucket'a: redacted/<video_id>/<timestamp>.mp4
+    İki mod:
+      1) existing_object=(bucket, object) → sadece presign üret ve dön.
+      2) local_path verilmiş → dosyayı uygun bucket'a yükle, sonra presign dön.
+
+    Kaynak MinIO ise aynı bucket kullanılır; değilse MINIO_DEFAULT_BUCKET.
+    Nesne yolu: redacted/<video_id>/<timestamp>.mp4
     """
     cli = get_minio()
+
+    # 1) Sadece mevcut objeyi presign et
+    if existing_object:
+        bucket, object_name = existing_object
+        # object gerçekten var mı kontrol et (yoksa MinIO exception atar)
+        cli.stat_object(bucket, object_name)
+        url = presigned_get(bucket, object_name, ttl_hours * 3600)
+        return {
+            "bucket": bucket,
+            "object": object_name,
+            "url": url,
+            "expires_in_seconds": str(ttl_hours * 3600),
+        }
+
+    # 2) Yeni dosyayı yükleyip presign et
+    if not local_path or not os.path.exists(local_path):
+        raise ValueError("local_path is required when existing_object is not provided.")
+
     if is_minio_url(src_storage_key):
         bucket, _ = parse_minio_url(src_storage_key)
     else:

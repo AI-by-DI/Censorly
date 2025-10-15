@@ -35,7 +35,7 @@ export default function Index() {
           id: v.id,
           title: v.title || "Untitled",
           image: v.poster_url || placeholders[i % placeholders.length],
-          warnings: [], // backend’e bağlayınca doldururuz
+          warnings: [],
         }));
 
         if (!canceled) setItems(mapped);
@@ -55,6 +55,7 @@ export default function Index() {
   const handleWatch = (videoId?: string) => {
     const id = videoId ?? (items[0]?.id || "");
     if (!id) return;
+    // Sansür modu: ON → censored, OFF → original
     navigate(enabled ? `/player/${id}?mode=censored` : `/player/${id}?mode=original`);
   };
 
@@ -100,11 +101,12 @@ export default function Index() {
         </div>
       </section>
 
-      {/* Rows */}
+      {/* Rows (Play davranışı sansür moduna göre yönlendiriliyor) */}
       <div className="pb-16">
-        <CategoryRow title="Recommended for You" movies={recommended} onPlay={(m) => handleWatch(String(m.id))} />
-        <CategoryRow title="Trending Now"       movies={trending}    onPlay={(m) => handleWatch(String(m.id))} />
-        <CategoryRow title="Newly Added"        movies={newlyAdded}  onPlay={(m) => handleWatch(String(m.id))} />
+        <CategoryRow title="Recommended for You" movies={recommended} censorEnabled={enabled} onPlay={(m) => handleWatch(String(m.id))} />
+        <CategoryRow title="Trending Now"       movies={trending}    censorEnabled={enabled} onPlay={(m) => handleWatch(String(m.id))} />
+        <CategoryRow title="Newly Added"        movies={newlyAdded}  censorEnabled={enabled} onPlay={(m) => handleWatch(String(m.id))} />
+
       </div>
     </div>
   );
