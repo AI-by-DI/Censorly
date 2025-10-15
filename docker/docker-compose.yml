@@ -1,4 +1,4 @@
-# version satırını istersen kaldırabilirsin (artık gereksiz uyarı veriyor)
+# version satırı artık gereksiz
 # version: "3.9"
 
 services:
@@ -9,7 +9,8 @@ services:
       POSTGRES_USER: censorly
       POSTGRES_PASSWORD: censorly
       POSTGRES_DB: censorly
-    ports: ["5432:5432"]
+    ports:
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -17,11 +18,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: censorly_redis
-    ports: ["6379:6379"]
+    ports:
+      - "6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -29,6 +32,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest
@@ -38,8 +42,8 @@ services:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio12345
     ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # MinIO Console
+      - "9000:9000" # API
+      - "9001:9001" # Console
     volumes:
       - miniodata:/data
     healthcheck:
@@ -51,6 +55,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
 
   pgadmin:
     image: dpage/pgadmin4
@@ -58,10 +63,13 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@censorly.com
       PGADMIN_DEFAULT_PASSWORD: admin
-    ports: ["5050:80"]
+    ports:
+      - "5050:80"
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
   api:
     build:
       context: ..
@@ -71,14 +79,18 @@ services:
     env_file:
       - ../.env
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_started }
-      minio: { condition: service_started }
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
     ports:
       - "8000:8000"
     volumes:
-      - ..:/app # tüm repo mount
-    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+      - ..:/app # kodu mount et (hot-reload)
+    command: uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000
+    restart: unless-stopped
 
   web:
     build:
@@ -92,9 +104,10 @@ services:
     volumes:
       - ../apps/web:/app
       - /app/node_modules
-    command: sh -c "npm install && npm run dev"
+    command: sh -c "npm install && npm run dev -- --host"
     environment:
-    - VITE_API_URL=http://localhost:8000
+      - VITE_API_URL=http://localhost:8000
+    restart: unless-stopped
 
   worker:
     build:
@@ -104,14 +117,17 @@ services:
     env_file:
       - ../.env
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_started }
-      minio: { condition: service_started }
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
     volumes:
-      - ../apps/worker:/app/worker
-    working_dir: /app/worker
+      - ../apps/worker:/app/apps/worker
+    working_dir: /app/apps/worker
     command: ["python", "main.py"]
-    restart: on-failure
+    restart: unless-stopped
 
 volumes:
   pgdata:
