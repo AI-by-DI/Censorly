@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================
+   THEME TOKENS (HSL)
+   =========================== */
+@layer base {
+  :root {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 98%;
+
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 4 100% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 60%;
+
+    --accent: 4 100% 60%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 4 100% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 4 100% 60%;
+
+    --radius: 1rem;
+
+    /* Content categories */
+    --violence: 4 100% 60%;
+    --blood: 270 100% 74%;
+    --alcohol: 165 100% 36%;
+    --nudity: 33 100% 56%;
+    --clown: 49 100% 52%;
+    --snake: 28 30% 56%;
+    --spider: 210 7% 46%;
+
+    /* Gradients */
+    --gradient-hero: linear-gradient(180deg, rgba(11, 11, 11, 0) 0%, rgba(11, 11, 11, 0.8) 50%, rgba(11, 11, 11, 1) 100%);
+    --gradient-card: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.8) 100%);
+
+    /* Shadows */
+    --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.4);
+    --shadow-hover: 0 16px 48px rgba(0, 0, 0, 0.6);
+
+    /* Transitions */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html, body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Text selection */
+  ::selection {
+    background: hsl(var(--primary) / 0.25);
+    color: hsl(var(--foreground));
+  }
+
+  /* Scrollbar (webkit) */
+  ::-webkit-scrollbar { height: 12px; width: 12px; }
+  ::-webkit-scrollbar-track { background: hsl(var(--background)); }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 9999px; }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--border)); }
+}
+
+/* ===========================
+   VIDEO: native controls off
+   =========================== */
+@layer base {
+  video { outline: none; background: #000; }
+
+  /* Chrome / Safari / iOS */
+  video::-webkit-media-controls { display: none !important; }
+  video::-webkit-media-controls-enclosure { display: none !important; }
+  video::-webkit-media-controls-panel { display: none !important; }
+  video::-webkit-media-controls-play-button { display: none !important; }
+  video::-webkit-media-controls-start-playback-button { display: none !important; }
+
+  /* Firefox: controls={false} yeterli ama yine de güvene alalım */
+  video::-moz-controls { display: none !important; }
+}
+
+/* ===========================
+   DESIGN HELPERS
+   =========================== */
+@layer components {
+  /* Gradient helpers */
+  .gradient-hero { background: var(--gradient-hero); }
+  .gradient-card { background: var(--gradient-card); }
+
+  /* Category badges */
+  .text-violence { color: hsl(var(--violence)); }
+  .bg-violence { background-color: hsl(var(--violence) / 0.2); }
+  .border-violence { border-color: hsl(var(--violence) / 0.3); }
+
+  .text-blood { color: hsl(var(--blood)); }
+  .bg-blood { background-color: hsl(var(--blood) / 0.2); }
+  .border-blood { border-color: hsl(var(--blood) / 0.3); }
+
+  .text-alcohol { color: hsl(var(--alcohol)); }
+  .bg-alcohol { background-color: hsl(var(--alcohol) / 0.2); }
+  .border-alcohol { border-color: hsl(var(--alcohol) / 0.3); }
+
+  .text-nudity { color: hsl(var(--nudity)); }
+  .bg-nudity { background-color: hsl(var(--nudity) / 0.2); }
+  .border-nudity { border-color: hsl(var(--nudity) / 0.3); }
+
+  .text-clown { color: hsl(var(--clown)); }
+  .bg-clown { background-color: hsl(var(--clown) / 0.2); }
+  .border-clown { border-color: hsl(var(--clown) / 0.3); }
+
+  .text-snake { color: hsl(var(--snake)); }
+  .bg-snake { background-color: hsl(var(--snake) / 0.2); }
+  .border-snake { border-color: hsl(var(--snake) / 0.3); }
+
+  .text-spider { color: hsl(var(--spider)); }
+  .bg-spider { background-color: hsl(var(--spider) / 0.2); }
+  .border-spider { border-color: hsl(var(--spider) / 0.3); }
+
+  /* Card shadows */
+  .shadow-card { box-shadow: var(--shadow-card); }
+  .shadow-hover { box-shadow: var(--shadow-hover); }
+
+  /* Smooth transitions */
+  .transition-smooth { transition: var(--transition-smooth); }
+}
+
+/* ===========================
+   FOCUS RINGS (consistency)
+   =========================== */
+@layer utilities {
+  .focus-ring {
+    @apply outline-none ring-2 ring-offset-2 ring-offset-background;
+    --tw-ring-color: hsl(var(--ring));
+  }
+  .focus-ring:focus-visible {
+    @apply ring-2;
+  }
+}

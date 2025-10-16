@@ -2,8 +2,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Bu dosya apps/api/main.py ise relative import doğru:
-from .routers import auth, preferences, uploads, analyses
+# routers dizinindeki tüm modülleri dahil et
+from .routers import (
+    auth,
+    preferences,
+    uploads,
+    analyses,
+    videos,
+    redactions,   # ✅ yeni ekleme
+)
 
 app = FastAPI(title="Censorly API")
 
@@ -18,5 +25,7 @@ app.add_middleware(
 # Router’lar
 app.include_router(auth.router)
 app.include_router(preferences.router)
-app.include_router(uploads.router)    # <-- upload & pipeline tetikleme
-app.include_router(analyses.router)   # <-- job start/ingest/finish & status
+app.include_router(uploads.router)
+app.include_router(analyses.router)
+app.include_router(videos.router)       # ✅ bu da importtan sonra aktif olur
+app.include_router(redactions.router)   # ✅ artık Swagger'da gözükecek

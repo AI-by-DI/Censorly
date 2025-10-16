@@ -2,52 +2,88 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { authApi } from "../lib/api";
 import RegisterForm from "../components/RegisterForm";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Card, CardContent } from "../components/ui/card";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
+import { toast } from "sonner";
 
-export default function Login() {
+export default function LoginPage() {
   const nav = useNavigate();
-  const [tab, setTab] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const onLogin = async () => {
-    setMsg(null);
-    if (!email.trim() || !pw) return setMsg("E-posta ve parola gerekli");
+    if (!email.trim() || !pw) {
+      toast.error("E-posta ve parola gerekli");
+      return;
+    }
     try {
       setLoading(true);
       await authApi.login(email.trim(), pw);
-      nav("/dashboard");
+      toast.success("Giriş başarılı 🎉");
+      nav("/");
     } catch (e: any) {
-      setMsg(e?.response?.data?.detail || "Giriş başarısız");
+      toast.error(e?.response?.data?.detail || "Giriş başarısız");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{ maxWidth: 420, margin: "80px auto", fontFamily: "system-ui" }}>
-      <h2>Censorly • Hesap</h2>
+    <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
+      <Card className="w-full max-w-md bg-card border border-border rounded-2xl shadow-lg animate-fade-in">
+        <CardContent className="p-8">
+          <h1 className="text-3xl font-bold text-center mb-6">Censorly</h1>
 
-      <div style={{ display:"flex", gap:8, margin:"12px 0" }}>
-        <button onClick={() => setTab("login")}    style={{ background: tab==="login" ? "#4c7dff" : "#2c385f", color:"#fff", border:0, borderRadius:8, padding:"8px 12px" }}>Giriş</button>
-        <button onClick={() => setTab("register")} style={{ background: tab==="register" ? "#4c7dff" : "#2c385f", color:"#fff", border:0, borderRadius:8, padding:"8px 12px" }}>Kayıt Ol</button>
-      </div>
+          <Tabs defaultValue="login" className="w-full">
+            <TabsList className="grid grid-cols-2 w-full mb-6">
+              <TabsTrigger value="login">Giriş Yap</TabsTrigger>
+              <TabsTrigger value="register">Kayıt Ol</TabsTrigger>
+            </TabsList>
 
-      {tab === "login" ? (
-        <div style={{ display:"grid", gap:10 }}>
-          <label>E-posta</label>
-          <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" />
-          <label>Parola</label>
-          <input type="password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="••••••••" />
-          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-            <button onClick={onLogin} disabled={loading}>{loading ? "Giriş yapılıyor..." : "Giriş"}</button>
-            {msg && <span style={{ color:"#c33" }}>{msg}</span>}
-          </div>
-        </div>
-      ) : (
-        <RegisterForm onSuccess={() => { setTab("login"); setMsg("Kayıt başarılı, şimdi giriş yapın."); }} />
-      )}
+            {/* LOGIN */}
+            <TabsContent value="login">
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm text-muted-foreground">E-posta</label>
+                  <Input
+                    type="email"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm text-muted-foreground">Parola</label>
+                  <Input
+                    type="password"
+                    placeholder="••••••••"
+                    value={pw}
+                    onChange={(e) => setPw(e.target.value)}
+                  />
+                </div>
+
+                <Button
+                  className="w-full mt-2"
+                  onClick={onLogin}
+                  disabled={loading}
+                >
+                  {loading ? "Giriş yapılıyor..." : "Giriş Yap"}
+                </Button>
+              </div>
+            </TabsContent>
+
+            {/* REGISTER */}
+            <TabsContent value="register">
+              <RegisterForm
+              />
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
     </div>
   );
 }

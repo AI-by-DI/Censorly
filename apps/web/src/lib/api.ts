@@ -1,4 +1,3 @@
-// apps/web/src/lib/api.ts
 import axios, { AxiosHeaders, AxiosRequestConfig, InternalAxiosRequestConfig } from "axios";
 
 /** --------- Base URL --------- */
@@ -61,7 +60,7 @@ api.interceptors.response.use(
       if (!refreshing) {
         refreshing = true;
         try {
-          // Backend’in mevcut sürümüne göre: { token: <refresh> }
+          // Backend: { token: <refresh> }
           const { data } = await axios.post(
             `${BASE_URL}/auth/refresh`,
             { token: tokenStore.refresh },
@@ -102,13 +101,19 @@ api.interceptors.response.use(
  *  USER / AUTH (kullanıcı tabanlı)
  *  ================================================================ */
 export const authApi = {
-  async register(email: string, password: string, country?: string | null, age?: number | null) {
+  async register(
+    email: string,
+    password: string,
+    country?: string | null,
+    birthYear?: number | null
+  ) {
     const body: Record<string, any> = { email, password };
-    if (country) body.country = country;          // ISO-2, örn "TR"
-    if (age !== null && age !== undefined) body.age = age;
+    if (country) body.country = country;
+    // null/undefined hariç tüm numeric değerleri gönder (0 vs problem çıkarmaz)
+    if (birthYear !== null && birthYear !== undefined) body.birth_year = birthYear;
 
     const { data } = await api.post("/auth/register", body, {
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
     });
     return data;
   },
@@ -159,13 +164,13 @@ export const CATEGORIES: Category[] = [
   "alcohol", "blood", "violence", "nudity", "clown", "snake", "spider"
 ];
 
-export type Mode = "blur" | "skip";
+export type Mode = "blur" | "skip" | "none";
 export type EffectiveMode = "blur" | "skip" | "none"; // none = dokunma/oynat
 
 export type PreferencePayload = {
   name?: string;
   // true = sansürleme (oynat), false = sansürle
-  allow_map: Partial<Record<Category, boolean>>;
+  allow_map?: Partial<Record<Category, boolean>>;
   // global fallback (kategori özel seçilmezse)
   mode: Mode;
   // sadece sansürlenecek kategoriler için tip (blur/skip)
@@ -195,7 +200,7 @@ export function sanitizePreferencePayload(s: PreferencePayload): PreferencePaylo
   const filteredModeMap: Partial<Record<Category, Mode>> = {};
   for (const c of CATEGORIES) {
     if (allow_full[c] === false) {
-      filteredModeMap[c] = s.mode_map?.[c] || s.mode || "blur";
+      filteredModeMap[c] = s.mode_map?.[c] ?? s.mode ?? "blur";
     }
   }
   return {
