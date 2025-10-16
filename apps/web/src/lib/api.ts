@@ -1,5 +1,9 @@
 // apps/web/src/lib/api.ts
-import axios, { AxiosHeaders, AxiosRequestConfig, InternalAxiosRequestConfig } from "axios";
+import axios, {
+  AxiosHeaders,
+  AxiosRequestConfig,
+  InternalAxiosRequestConfig,
+} from "axios";
 
 /** --------- Base URL --------- */
 const BASE_URL =
@@ -9,8 +13,12 @@ const BASE_URL =
 
 /** --------- Token Store --------- */
 export const tokenStore = {
-  get access()  { return localStorage.getItem("access"); },
-  get refresh() { return localStorage.getItem("refresh"); },
+  get access() {
+    return localStorage.getItem("access");
+  },
+  get refresh() {
+    return localStorage.getItem("refresh");
+  },
   set(a?: string, r?: string) {
     if (a) localStorage.setItem("access", a);
     if (r) localStorage.setItem("refresh", r);
@@ -18,7 +26,7 @@ export const tokenStore = {
   clear() {
     localStorage.removeItem("access");
     localStorage.removeItem("refresh");
-  }
+  },
 };
 
 /** ================================================================
@@ -30,7 +38,7 @@ const api = axios.create({
 });
 
 function ensureAxiosHeaders(h: InternalAxiosRequestConfig["headers"]) {
-  return (h instanceof AxiosHeaders) ? h : new AxiosHeaders(h);
+  return h instanceof AxiosHeaders ? h : new AxiosHeaders(h);
 }
 
 /** Bearer ekleme */
@@ -52,7 +60,8 @@ api.interceptors.response.use(
   (r) => r,
   async (err) => {
     const status = err?.response?.status;
-    const original: AxiosRequestConfig & { _retried?: boolean } = err?.config ?? {};
+    const original: AxiosRequestConfig & { _retried?: boolean } =
+      err?.config ?? {};
     const hasRefresh = !!tokenStore.refresh;
 
     if (status === 401 && !original._retried && hasRefresh) {
@@ -61,7 +70,6 @@ api.interceptors.response.use(
       if (!refreshing) {
         refreshing = true;
         try {
-          // Backend’in mevcut sürümüne göre: { token: <refresh> }
           const { data } = await axios.post(
             `${BASE_URL}/auth/refresh`,
             { token: tokenStore.refresh },
@@ -99,23 +107,23 @@ api.interceptors.response.use(
 );
 
 /** ================================================================
- *  USER / AUTH (kullanıcı tabanlı)
+ *  USER / AUTH
  *  ================================================================ */
 export const authApi = {
-    async register(
-      email: string,
-      password: string,
-      country?: string | null,
-      birthYear?: number | null
-    ) {
-      const body: Record<string, any> = { email, password };
-      if (country) body.country = country;
-      if (birthYear) body.birth_year = birthYear; // ✅ yaş yerine yıl
+  async register(
+    email: string,
+    password: string,
+    country?: string | null,
+    birthYear?: number | null
+  ) {
+    const body: Record<string, any> = { email, password };
+    if (country) body.country = country;
+    if (birthYear) body.birth_year = birthYear; // yaş yerine yıl
 
-      const { data } = await api.post("/auth/register", body, {
-        headers: { "Content-Type": "application/json" },
-      });
-      return data;
+    const { data } = await api.post("/auth/register", body, {
+      headers: { "Content-Type": "application/json" },
+    });
+    return data;
   },
 
   async login(email: string, password: string) {
@@ -136,21 +144,18 @@ export const authApi = {
   async logout() {
     const at = tokenStore.access;
     const rt = tokenStore.refresh;
-
     await api.post(
       "/auth/logout",
       { refresh_token: rt ?? null },
       { headers: at ? { Authorization: `Bearer ${at}` } : {} }
     );
     tokenStore.clear();
-  }
+  },
 };
 
 /** ================================================================
- *  PREFERENCES (profil tabanlı)
+ *  PREFERENCES (profil)
  *  ================================================================ */
-
-/** --- Tipler --- */
 export type Category =
   | "alcohol"
   | "blood"
@@ -161,17 +166,23 @@ export type Category =
   | "spider";
 
 export const CATEGORIES: Category[] = [
-  "alcohol", "blood", "violence", "nudity", "clown", "snake", "spider"
+  "alcohol",
+  "blood",
+  "violence",
+  "nudity",
+  "clown",
+  "snake",
+  "spider",
 ];
 
 export type Mode = "blur" | "skip" | "none";
-export type EffectiveMode = "blur" | "skip" | "none"; // none = dokunma/oynat
+export type EffectiveMode = Mode;
 
 export type PreferencePayload = {
   name?: string;
   // true = sansürleme (oynat), false = sansürle
   allow_map?: Partial<Record<Category, boolean>>;
-  // global fallback (kategori özel seçilmezse)
+  // global fallback
   mode: Mode;
   // sadece sansürlenecek kategoriler için tip (blur/skip)
   mode_map: Partial<Record<Category, Mode>>;
@@ -187,15 +198,17 @@ export type EffectiveOut = {
   effective: Record<Category | string, EffectiveMode>;
 };
 
-/** --- Helpers --- */
+/** Helpers */
 function completeAllowMap(src: Partial<Record<Category, boolean>>) {
   const out: Partial<Record<Category, boolean>> = {};
-  for (const c of CATEGORIES) out[c] = src[c] ?? true; // default: sansürleme (oynat)
+  for (const c of CATEGORIES) out[c] = src[c] ?? true; // default: sansürleme açık
   return out;
 }
 
-/** Form-state → API payload (gereksizleri at, eksikleri tamamla) */
-export function sanitizePreferencePayload(s: PreferencePayload): PreferencePayload {
+/** Form-state → API payload */
+export function sanitizePreferencePayload(
+  s: PreferencePayload
+): PreferencePayload {
   const allow_full = completeAllowMap(s.allow_map || {});
   const filteredModeMap: Partial<Record<Category, Mode>> = {};
   for (const c of CATEGORIES) {
@@ -211,7 +224,7 @@ export function sanitizePreferencePayload(s: PreferencePayload): PreferencePaylo
   };
 }
 
-/** --- API'ler --- */
+/** Preferences API */
 export const prefApi = {
   async list(): Promise<PreferenceOut[]> {
     const { data } = await api.get("/me/preferences");
@@ -221,27 +234,32 @@ export const prefApi = {
   async create(body: PreferencePayload): Promise<PreferenceOut> {
     const payload = sanitizePreferencePayload(body);
     const { data } = await api.post("/me/preferences", payload, {
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
     });
     return data;
-    // 409 gelirse aynı isimli profil var demektir
+    // 409 = aynı isimli profil var
   },
 
-  async update(id: string, body: Partial<PreferencePayload>): Promise<PreferenceOut> {
-    // Kısmi güncelleme için minimal payload gönderebilirsin.
-    // Eğer mode/allow_map değişiyorsa sanitize edelim:
+  async update(
+    id: string,
+    body: Partial<PreferencePayload>
+  ): Promise<PreferenceOut> {
     const patch =
       body.mode || body.allow_map || body.mode_map
         ? sanitizePreferencePayload({
             name: body.name ?? "default",
             mode: (body.mode as Mode) ?? "blur",
-            allow_map: (body.allow_map || {}) as Partial<Record<Category, boolean>>,
-            mode_map: (body.mode_map || {}) as Partial<Record<Category, Mode>>,
+            allow_map: (body.allow_map || {}) as Partial<
+              Record<Category, boolean>
+            >,
+            mode_map: (body.mode_map || {}) as Partial<
+              Record<Category, Mode>
+            >,
           })
         : body;
 
     const { data } = await api.put(`/me/preferences/${id}`, patch, {
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
     });
     return data;
   },
@@ -252,15 +270,20 @@ export const prefApi = {
   },
 };
 
-/** --- Aktif profil ID yönetimi (frontend içinde globale gerek yok) --- */
-const ACTIVE_PROFILE_KEY = "active_profile_id";
+/** Aktif profil ID yönetimi */
 export const ActiveProfile = {
-  get(): string | null { return localStorage.getItem(ACTIVE_PROFILE_KEY); },
-  set(id: string)      { localStorage.setItem(ACTIVE_PROFILE_KEY, id); },
-  clear()              { localStorage.removeItem(ACTIVE_PROFILE_KEY); },
+  get(): string | null {
+    return localStorage.getItem("active_profile_id");
+  },
+  set(id: string) {
+    localStorage.setItem("active_profile_id", id);
+  },
+  clear() {
+    localStorage.removeItem("active_profile_id");
+  },
 };
 
-/** Kullanışlı default profil (ilk kurulumda) */
+/** Varsayılan profil */
 export const DEFAULT_PREF: PreferencePayload = {
   name: "default",
   mode: "blur",
@@ -276,7 +299,7 @@ export const DEFAULT_PREF: PreferencePayload = {
   mode_map: {},
 };
 
-/** Profil yoksa oluşturup aktif yapar; varsa ilki/aktif olanı döner */
+/** Profil yoksa oluşturup aktif yapar; varsa aktif olanı döner */
 export async function ensureActiveProfile(): Promise<PreferenceOut> {
   const list = await prefApi.list();
   if (list.length === 0) {
@@ -286,7 +309,7 @@ export async function ensureActiveProfile(): Promise<PreferenceOut> {
   }
   const currentId = ActiveProfile.get() ?? list[0].id;
   ActiveProfile.set(currentId);
-  return list.find(p => p.id === currentId) ?? list[0];
+  return list.find((p) => p.id === currentId) ?? list[0];
 }
 
 export default api;
