@@ -58,13 +58,6 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      {/* Basit nav (geçici) */}
-      {authed && (
-        <nav className="p-3 flex gap-4 border-b border-border">
-          <Link to="/index">Home</Link>
-          <Link to="/profile">Profile</Link>
-        </nav>
-      )}
 
       <Routes>
         {/* Köke geldiğinde */}

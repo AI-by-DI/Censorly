@@ -12,7 +12,7 @@ from data.schema import (
 
 CAT_KEYS = ["alcohol", "blood", "violence", "phobic", "obscene"]
 DEFAULT_THRESH = 0.40
-DEFAULT_BLUR = {"blur_k": 61, "box_thick": 4, "hold_gap_ms": 600, "grace_ms": 200}
+DEFAULT_BLUR = {"blur_k": 80, "box_thick": 4, "hold_gap_ms": 600, "grace_ms": 200}
 
 OUT_PREFIX = os.getenv("REDACT_OUT_PREFIX", "uploads/redacted").rstrip("/")
 JOBS_JSONL_PREFIX = os.getenv("JOBS_JSONL_PREFIX", "uploads/jobs").strip("/")

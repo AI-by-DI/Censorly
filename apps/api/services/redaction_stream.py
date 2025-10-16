@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import os, json, hashlib, tempfile, subprocess, logging
-from typing import Optional, Dict, List, Generator, Tuple
+import os, json, tempfile, subprocess, logging
+from dataclasses import dataclass
+from typing import Optional, Dict, List, Tuple, Generator
 from uuid import UUID
-from sqlalchemy import select, and_, desc, or_
+
+from sqlalchemy import select, and_, desc
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
 from data.schema import PreferenceProfile, VideoAsset, AnalysisJob, DetectionEvent
-import re
-from dataclasses import dataclass
 
-log = logging.getLogger("uvicorn.error")
+log = logging.getLogger("api.redaction_stream")
 
+# ------------ Sabitler / Eşikler ------------
 CAT_KEYS = ["alcohol", "blood", "violence", "phobic", "obscene"]
 
 DEFAULT_THRESH = 0.40
@@ -25,7 +26,7 @@ CATEGORY_LABELS: Dict[str, List[str]] = {
     "alcohol":  ["alcohol"],
     "blood":    ["blood"],
     "violence": ["violence"],
-    "phobic":   ["Clown", "Spider", "Snake"],
+    "phobic":   ["Clown", "Spider", "Snake"],   # fallback
     "obscene":  ["nudenet"],
     "nudity":   ["nudenet"],
 }
@@ -42,14 +43,11 @@ BASE_LABEL_THRESHOLDS: Dict[str, float] = {
     "default":  0.30,
 }
 
+# phobic alt sınıflar için kanonik adlar
 _PHOBIC_CANON = {"clown": "Clown", "spider": "Spider", "snake": "Snake"}
 _PHOBIC_CANON_SET = set(_PHOBIC_CANON.values())
 
-@dataclass
-class Interval:
-    start_ms: int
-    end_ms: int
-
+# ---------------- FFmpeg yardımcıları ----------------
 def _ffprobe_duration(path: str) -> float:
     try:
         p = subprocess.run(
@@ -63,19 +61,26 @@ def _ffprobe_duration(path: str) -> float:
     except Exception:
         return 0.0
 
-def _load_events_from_jsonl(jsonl_path: str) -> list[dict]:
-    evs: list[dict] = []
-    with open(jsonl_path, "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                evs.append(json.loads(line))
-            except Exception:
-                pass
-    return evs
+def _has_audio(path: str) -> bool:
+    try:
+        p = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "default=noprint_wrappers=1", path],
+            capture_output=True, text=True
+        )
+        return "codec_type=audio" in (p.stdout or "")
+    except Exception:
+        p = subprocess.run(["ffmpeg", "-v", "quiet", "-i", path, "-f", "null", "-"],
+                           capture_output=True, text=True)
+        return "Audio:" in (p.stderr or "")
 
-def _merge_intervals(ints: list[Interval], join_gap_ms: int) -> list[Interval]:
-    if not ints:
-        return []
+@dataclass
+class Interval:
+    start_ms: int
+    end_ms: int
+
+def _merge_intervals(ints: List[Interval], join_gap_ms: int) -> List[Interval]:
+    if not ints: return []
     ints = sorted(ints, key=lambda x: x.start_ms)
     out = [ints[0]]
     for cur in ints[1:]:
@@ -86,49 +91,46 @@ def _merge_intervals(ints: list[Interval], join_gap_ms: int) -> list[Interval]:
             out.append(Interval(cur.start_ms, cur.end_ms))
     return out
 
+def _load_events_from_jsonl(jsonl_path: str) -> list[dict]:
+    evs: list[dict] = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line: continue
+            try:
+                evs.append(json.loads(line))
+            except Exception:
+                pass
+    return evs
+
 def _calc_skip_intervals(jsonl_path: str,
-                         labels_skip: list[str],
-                         min_score_map: dict[str, float],
+                         labels_skip: List[str],
+                         min_score_map: Dict[str, float],
                          hold_gap_ms: int,
                          grace_ms: int,
-                         min_skip_ms: int) -> list[Interval]:
-    """
-    JSONL’den, skip’e giren label’ların (score >= threshold) kapsadığı zamanları
-    genişletme (grace) ve bitişik olayları birleştirme (hold_gap) ile tekleştirir.
-    """
+                         min_skip_ms: int) -> List[Interval]:
     if not labels_skip:
         return []
-
     events = _load_events_from_jsonl(jsonl_path)
     wanted = set(labels_skip)
-
-    ints: list[Interval] = []
+    ints: List[Interval] = []
     for e in events:
         lab = str(e.get("label") or "")
         if lab not in wanted:
             continue
         sc = float(e.get("score") or 0.0)
-        thr = float(min_score_map.get(lab, min_score_map.get("default", 0.3)))
+        thr = float(min_score_map.get(lab, min_score_map.get("default", DEFAULT_THRESH)))
         if sc < thr:
             continue
         ts = int(e.get("ts_ms") or 0)
-        # tekil event’i grace ile bir pencere olarak genişletiyoruz
         ints.append(Interval(max(0, ts - grace_ms), ts + grace_ms))
-
-    # bitişikleri hold_gap ile merge
     merged = _merge_intervals(ints, hold_gap_ms)
+    return [iv for iv in merged if (iv.end_ms - iv.start_ms) >= max(0, min_skip_ms)]
 
-    # minimum uzunluk filtresi
-    merged = [iv for iv in merged if (iv.end_ms - iv.start_ms) >= max(0, min_skip_ms)]
-    return merged
-
-def _invert_to_keep(total_ms: int, skips: list[Interval]) -> list[Interval]:
-    """skip aralıklarını tersine çevirerek keep segmentlerini üretir."""
-    if total_ms <= 0:
-        return []
-    if not skips:
-        return [Interval(0, total_ms)]
-    out: list[Interval] = []
+def _invert_to_keep(total_ms: int, skips: List[Interval]) -> List[Interval]:
+    if total_ms <= 0: return []
+    if not skips: return [Interval(0, total_ms)]
+    out: List[Interval] = []
     cur = 0
     for s in skips:
         if s.start_ms > cur:
@@ -136,101 +138,58 @@ def _invert_to_keep(total_ms: int, skips: list[Interval]) -> list[Interval]:
         cur = max(cur, s.end_ms)
     if cur < total_ms:
         out.append(Interval(cur, total_ms))
-    # negatif/boşları at
     return [iv for iv in out if iv.end_ms > iv.start_ms]
 
-def _build_audio_filter_from_intervals(keep: list[Interval]) -> tuple[str, list[str]]:
-    """
-    0: redacted video  |  1: original (audio source)
-    keep aralıklarını 1:a üzerinden atrim + asetpts ile kesip,
-    format’ı sabitleyip concat’la tek akışa birleştiriyoruz.
-    """
+def _build_audio_filter_from_intervals(keep: List[Interval]) -> Tuple[str, List[str]]:
     if not keep:
-        # hiç keep yoksa kısa bir sessiz akış döndür (oynatıcı takılmasın)
         return ("anullsrc=r=48000:cl=stereo,atrim=0:0.1[aout]", [])
-
-    parts = []
-    labels = []
+    parts, labels = [], []
     for i, iv in enumerate(keep):
         ss = iv.start_ms / 1000.0
         ee = iv.end_ms   / 1000.0
         parts.append(
-            # format sabitle: kanal/samplerate; asetpts ile TS’leri sıfırla
             f"[1:a]atrim=start={ss:.3f}:end={ee:.3f},asetpts=N/SR/TB,"
             f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]"
         )
         labels.append(f"[a{i}]")
-
-    # concat sonrası hafif zaman düzeltmesi
     fc = ";".join(parts) + f";{''.join(labels)}concat=n={len(labels)}:v=0:a=1,aresample=async=1:first_pts=0[aout]"
     return (fc, [])
 
-
-# -------------------- profile çözümleme --------------------
+# ---------------- Profil okuma / normalizasyon ----------------
 def _is_uuid_like(s: str) -> bool:
     try:
-        UUID(str(s))
-        return True
+        UUID(str(s)); return True
     except Exception:
         return False
 
 def _get_profile(db: Session, current_user_id: str, profile_id: Optional[str]):
     order_col = getattr(PreferenceProfile, "updated_at", None) or getattr(PreferenceProfile, "id")
-
     if not profile_id or str(profile_id).lower() in ("active", "default"):
-        q = (
-            select(PreferenceProfile)
-            .where(PreferenceProfile.user_id == current_user_id)
-            .order_by(desc(order_col))
-            .limit(1)
-        )
+        q = (select(PreferenceProfile)
+             .where(PreferenceProfile.user_id == current_user_id)
+             .order_by(desc(order_col)).limit(1))
         return db.execute(q).scalars().first()
-
     if _is_uuid_like(profile_id):
-        q = (
-            select(PreferenceProfile)
-            .where(
-                and_(
-                    PreferenceProfile.user_id == current_user_id,
-                    PreferenceProfile.id == UUID(str(profile_id)),
-                )
-            )
-            .limit(1)
-        )
+        q = (select(PreferenceProfile)
+             .where(and_(PreferenceProfile.user_id==current_user_id,
+                         PreferenceProfile.id==UUID(str(profile_id))))
+             .limit(1))
         return db.execute(q).scalars().first()
-
     if hasattr(PreferenceProfile, "slug"):
-        q = (
-            select(PreferenceProfile)
-            .where(
-                and_(
-                    PreferenceProfile.user_id == current_user_id,
-                    PreferenceProfile.slug == str(profile_id),
-                )
-            )
-            .limit(1)
-        )
+        q = (select(PreferenceProfile)
+             .where(and_(PreferenceProfile.user_id==current_user_id,
+                         PreferenceProfile.slug==str(profile_id)))
+             .limit(1))
         prof = db.execute(q).scalars().first()
-        if prof:
-            return prof
-
+        if prof: return prof
     if hasattr(PreferenceProfile, "name"):
-        q = (
-            select(PreferenceProfile)
-            .where(
-                and_(
-                    PreferenceProfile.user_id == current_user_id,
-                    PreferenceProfile.name == str(profile_id),
-                )
-            )
-            .limit(1)
-        )
+        q = (select(PreferenceProfile)
+             .where(and_(PreferenceProfile.user_id==current_user_id,
+                         PreferenceProfile.name==str(profile_id)))
+             .limit(1))
         prof = db.execute(q).scalars().first()
-        if prof:
-            return prof
-
+        if prof: return prof
     return None
-# ---------------------------------------------------------------
 
 def _allow_flag(v) -> bool:
     return True if v is None else bool(v)
@@ -270,6 +229,7 @@ def _blur(pd: Dict) -> Dict[str,int]:
     merged = {**DEFAULT_BLUR, **{k:int(v) for k,v in (ex.get("blur_params") or {}).items()}}
     return merged
 
+# ---------------- JSONL / Job yardımcıları ----------------
 def _latest_done_job(db: Session, video_id: str) -> Optional[AnalysisJob]:
     q = (select(AnalysisJob)
          .where(and_(AnalysisJob.video_id==video_id, AnalysisJob.status=="done"))
@@ -294,23 +254,100 @@ def _build_jsonl_from_db(db: Session, job_id: str) -> str:
         for r in rows:
             lab = getattr(r.label, "value", r.label)
             extra = getattr(r, "extra", None) or getattr(r, "extras", None) or {}
-            raw = None
-            if isinstance(extra, dict):
-                raw = extra.get("raw_label") or extra.get("rawLabel") or extra.get("subtype")
+
+            # 🔴 phobic alt sınıf kanonikleştirme (iç içe extra desteği)
+            raw = _raw_from_extra(extra)
+            canon = None
+            if raw:
+                s = str(raw).strip().lower()
+                if s.startswith("phobic/"):
+                    s = s.split("/", 1)[-1]
+                canon = _PHOBIC_CANON.get(s)
+
+
+            out_label = canon or lab
+
             f.write(json.dumps({
                 "ts_ms": int(r.ts_ms),
-                "label": str(lab),
+                "label": str(out_label),
                 "score": float(r.score),
                 "bbox":  getattr(r, "bbox", None) or None,
                 "track_id": getattr(r, "track_id", None),
-                "raw_label": raw or None,
             }, ensure_ascii=False) + "\n")
     log.warning(f"[stream] JSONL not found on disk → generating from DB: job_id={job_id}")
     return path
 
-def _canon_phobic_name(s: Optional[str]) -> Optional[str]:
-    if not s:
+def _ensure_canon_labels_jsonl(jsonl_path: str) -> str:
+    """
+    Eldeki JSONL içinde label=phobic + raw_label/subtype Clown|Spider|Snake ise
+    label alanını kanonik alt sınıfa çevirir. Değişiklik yaparsa temp dosya
+    döner, aksi halde orijinal path'i geri verir.
+    """
+    try:
+        changed = False
+        out = tempfile.NamedTemporaryFile(prefix="jsonl_fix_", delete=False)
+        out_path = out.name
+        out.close()
+
+        with open(jsonl_path, "r", encoding="utf-8") as inp, open(out_path, "w", encoding="utf-8") as out_f:
+            for line in inp:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    out_f.write(line)
+                    continue
+
+                lab = str(obj.get("label") or "")
+                if lab.lower() == "phobic":
+                    raw = obj.get("raw_label") or obj.get("rawLabel") or obj.get("subtype")
+                    if raw:
+                        s = str(raw).strip().lower()
+                        if s.startswith("phobic/"):
+                            s = s.split("/", 1)[-1]
+                        canon = _PHOBIC_CANON.get(s)
+                        if canon:
+                            obj["label"] = canon
+                            changed = True
+
+                out_f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+        if changed:
+            return out_path
+        else:
+            try: os.unlink(out_path)
+            except: pass
+            return jsonl_path
+    except Exception:
+        # bir şey olursa orijinal path'le devam et
+        return jsonl_path
+
+def _raw_from_extra(extra: dict | None) -> Optional[str]:
+    """
+    DetectionEvent.extra alanında raw_label bilgisi bazen iç içe ({"extra": {...}}) gelebiliyor.
+    Burada tüm olası konumları deneriz.
+    """
+    if not isinstance(extra, dict):
         return None
+
+    # Düz seviye
+    raw = extra.get("raw_label") or extra.get("rawLabel") or extra.get("subtype")
+    if raw:
+        return str(raw)
+
+    # Bir kademe iç içe: {"extra": {...}} veya {"extras": {...}}
+    for k in ("extra", "extras"):
+        node = extra.get(k)
+        if isinstance(node, dict):
+            raw = node.get("raw_label") or node.get("rawLabel") or node.get("subtype")
+            if raw:
+                return str(raw)
+
+    return None
+
+
+# -------------- phobic alt sınıf çözümleme --------------
+def _canon_phobic_name(s: Optional[str]) -> Optional[str]:
+    if not s: return None
     s = str(s).strip().lower()
     if s.startswith("phobic/"):
         s = s.split("/", 1)[-1]
@@ -323,30 +360,29 @@ def _canon_from_label_or_extra(label: str, extra: dict | None) -> Optional[str]:
     if by_label:
         return by_label
     if isinstance(extra, dict):
-        raw = extra.get("raw_label") or extra.get("rawLabel") or extra.get("subtype")
+        raw = _raw_from_extra(extra)
         by_extra = _canon_phobic_name(raw)
         if by_extra:
             return by_extra
+
     return None
 
-def _discover_phobic_sublabels(db: Session, job_id: str) -> list[str]:
+def _discover_phobic_sublabels(db: Session, job_id: str) -> List[str]:
     rows = db.execute(
         select(DetectionEvent)
         .where(DetectionEvent.job_id == job_id)
         .order_by(DetectionEvent.ts_ms.asc())
     ).scalars().all()
-
-    found: list[str] = []
+    found: List[str] = []
     for r in rows:
         lab = getattr(r.label, "value", r.label)
         extra = getattr(r, "extra", None) or getattr(r, "extras", None) or {}
         canon = _canon_from_label_or_extra(lab, extra)
         if canon:
             found.append(canon)
+    return sorted(list(dict.fromkeys(found)))
 
-    uniq = sorted(list(dict.fromkeys(found)))
-    return uniq
-
+# -------------- Etiket map'leri --------------
 def _labels_from_mode_map(db: Session, job_id: str, mode_map: Dict[str,str]) -> Tuple[List[str], List[str], List[str]]:
     blur, red, skip = [], [], []
 
@@ -354,40 +390,42 @@ def _labels_from_mode_map(db: Session, job_id: str, mode_map: Dict[str,str]) -> 
         mode_l = (mode or "").strip().lower()
         if mode_l not in ("blur", "red", "skip"):
             return
-        k = key.strip().lower()
-        if k in ("nudity", "obscene"):
+
+        k_raw = (key or "").strip()
+        k = k_raw.lower()
+
+        # 🔧 phobic/alt-sınıf anahtarlarını normalize et (phobic/clown → Clown)
+        if k.startswith("phobic/"):
+            sub = k.split("/", 1)[-1]  # clown | spider | snake
+            if sub in _PHOBIC_CANON:
+                lbls = [_PHOBIC_CANON[sub]]  # 'Clown' / 'Spider' / 'Snake'
+            else:
+                lbls = CATEGORY_LABELS.get("phobic", [])
+        elif k in ("nudity", "obscene"):
             lbls = CATEGORY_LABELS["nudity"]
         elif k == "phobic":
             found = _discover_phobic_sublabels(db, job_id)
             lbls = found if found else CATEGORY_LABELS["phobic"]
-        elif k in _PHOBIC_CANON:
+        elif k in _PHOBIC_CANON:  # 'clown' | 'spider' | 'snake'
             lbls = [_PHOBIC_CANON[k]]
         elif k in CATEGORY_LABELS:
             lbls = CATEGORY_LABELS[k]
         else:
-            lbls = [key]
-        if mode_l == "blur": blur.extend(lbls)
-        elif mode_l == "red": red.extend(lbls)
-        else: skip.extend(lbls)
+            # serbest metin etiketleri olduğu gibi gönder
+            lbls = [k_raw]
+
+        if mode_l == "blur":
+            blur.extend(lbls)
+        elif mode_l == "red":
+            red.extend(lbls)
+        else:
+            skip.extend(lbls)
 
     for k, v in (mode_map or {}).items():
         add_labels(k, v)
 
     mkuniq = lambda xs: sorted(list(dict.fromkeys(xs)))
     return mkuniq(blur), mkuniq(red), mkuniq(skip)
-
-def _labels_from_allow(db: Session, job_id: str, pd: Dict) -> List[str]:
-    cats = _blocked_from_allow(pd)
-    labels: List[str] = []
-    for cat in cats:
-        if cat == "phobic":
-            dyn = _discover_phobic_sublabels(db, job_id)
-            labels.extend(dyn if dyn else CATEGORY_LABELS["phobic"])
-        elif cat in CATEGORY_LABELS:
-            labels.extend(CATEGORY_LABELS[cat])
-        elif cat in _PHOBIC_CANON:
-            labels.append(_PHOBIC_CANON[cat])
-    return sorted(list(dict.fromkeys(labels)))
 
 def _load_dynamic_on_thresholds(json_path: str, wanted: List[str]) -> Dict[str, float]:
     try:
@@ -423,18 +461,7 @@ def _build_min_score_map(profile_extras: Dict) -> Dict[str, float]:
         min_map["alcohol"] = 0.25
     return min_map
 
-# --- helper: audio var mı? ---
-def _has_audio(path: str) -> bool:
-    try:
-        p = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "default=noprint_wrappers=1", path],
-            capture_output=True, text=True
-        )
-        return "codec_type=audio" in (p.stdout or "")
-    except Exception:
-        p = subprocess.run(["ffmpeg", "-v", "quiet", "-i", path, "-f", "null", "-"], capture_output=True, text=True)
-        return "Audio:" in (p.stderr or "")
-
+# -------------- Canlı stream (redactions.download ile aynı mantık) --------------
 def stream_blur_live(db: Session, user_id: str, video_id: str, profile_id: str | None):
     prof = _get_profile(db, current_user_id=user_id, profile_id=profile_id)
     if not prof:
@@ -457,15 +484,11 @@ def stream_blur_live(db: Session, user_id: str, video_id: str, profile_id: str |
         jsonl_arg = _build_jsonl_from_db(db, str(job.id))
 
     mode_map = pd.get("mode_map") or {}
-
     if mode_map:
         labels_blur, labels_red, labels_skip = _labels_from_mode_map(db, str(job.id), mode_map)
-        log.info(f"[profile] mode_map={mode_map}")
-        log.info(f"[profile] labels_blur={labels_blur} labels_red={labels_red} labels_skip={labels_skip}")
         if not (labels_blur or labels_red or labels_skip):
             return StreamingResponse(open(vid.storage_key, "rb"), media_type="video/mp4")
     else:
-        # hiç filtre yok → orijinal
         return StreamingResponse(open(vid.storage_key, "rb"), media_type="video/mp4")
 
     video_arg = vid.storage_key
@@ -475,7 +498,6 @@ def stream_blur_live(db: Session, user_id: str, video_id: str, profile_id: str |
     min_map = _build_min_score_map(ex)
     min_map_str = ",".join([f"{k}:{float(v):.2f}" for k,v in min_map.items()])
 
-    # --- redact pipeline
     tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False); tmp.close()
     out_path = tmp.name
 
@@ -496,27 +518,17 @@ def stream_blur_live(db: Session, user_id: str, video_id: str, profile_id: str |
         "--keep_audio",
         "--min_keyframes_map", "default:1",
     ]
-    log.info(f"[stream] cmd={' '.join(cmd)}")
-    log.info(f"[stream] min_score_map={min_map}")
-
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0 or not os.path.exists(out_path):
         err = (proc.stderr or b"").decode(errors="ignore")
-        out = (proc.stdout  or b"").decode(errors="ignore")
-        log.error("[stream] pipeline stderr:\n%s", err)
-        log.error("[stream] pipeline stdout:\n%s", out)
+        log.error("[stream] redact failed: %s", err[-1000:])
         try: os.unlink(out_path)
         except: pass
         raise ValueError("Redaction pipeline failed")
 
-    # --- remux: eğer redacted sessizse daima orijinal sesten sesi graft et
-    # --- remux: audio’yu aynı kesimlerle üret
     fixed_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-
-    # labels_skip varsa sesi DAİMA orijinalden, keep aralıklarına göre kur.
-    if labels_skip:  # ← önemli kural
+    if labels_skip:
         orig_ms = int(_ffprobe_duration(video_arg) * 1000)
-
         skips = _calc_skip_intervals(
             jsonl_arg,
             labels_skip=labels_skip,
@@ -527,59 +539,47 @@ def stream_blur_live(db: Session, user_id: str, video_id: str, profile_id: str |
         )
         keep = _invert_to_keep(orig_ms, skips)
         fc, _ = _build_audio_filter_from_intervals(keep)
-
         remux = subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", out_path,   # 0: redacted (video)
-                "-i", video_arg,  # 1: original (audio source)
-                "-filter_complex", fc,
-                "-map", "0:v:0", "-map", "[aout]",
-                "-c:v", "copy",                 # video zaten işlenmiş
-                "-c:a", "aac", "-b:a", "128k",
-                "-shortest", "-movflags", "+faststart",
-                fixed_path
-            ],
+            ["ffmpeg","-y","-fflags","+genpts",
+             "-i", out_path, "-i", video_arg,
+             "-filter_complex", fc,
+             "-map","0:v:0","-map","[aout]",
+             "-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",
+             "-c:a","aac","-b:a","128k",
+             "-shortest","-movflags","+faststart", fixed_path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
     else:
-        # skip yoksa: redacted’ta ses varsa kopyala, yoksa orijinalden graft et
         if _has_audio(out_path):
             remux = subprocess.run(
-                ["ffmpeg", "-y", "-i", out_path,
-                "-c", "copy", "-movflags", "+faststart",
-                "-map", "0:v:0", "-map", "0:a:0?",
-                fixed_path],
+                ["ffmpeg","-y","-fflags","+genpts","-i",out_path,
+                 "-map","0:v:0","-map","0:a:0?",
+                 "-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",
+                 "-c:a","aac","-b:a","128k","-movflags","+faststart", fixed_path],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
         else:
             remux = subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-i", out_path,
-                    "-i", video_arg,
-                    "-map", "0:v:0", "-map", "1:a:0?",
-                    "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-                    "-shortest", "-movflags", "+faststart",
-                    fixed_path
-                ],
+                ["ffmpeg","-y","-fflags","+genpts",
+                 "-i",out_path,"-i",video_arg,
+                 "-map","0:v:0","-map","1:a:0?",
+                 "-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p",
+                 "-c:a","aac","-b:a","128k",
+                 "-shortest","-movflags","+faststart", fixed_path],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
 
     try: os.unlink(out_path)
     except: pass
-    if remux.returncode != 0 or not os.path.exists(fixed_path):
-        fixed_path = fixed_path if os.path.exists(fixed_path) else None
 
-    path_to_send = fixed_path or out_path
+    path_to_send = fixed_path if (remux.returncode == 0 and os.path.exists(fixed_path)) else out_path
     f = open(path_to_send, "rb")
 
     def _iter() -> Generator[bytes, None, None]:
         try:
             while True:
                 chunk = f.read(64 * 1024)
-                if not chunk:
-                    break
+                if not chunk: break
                 yield chunk
         finally:
             try: f.close()
@@ -590,10 +590,14 @@ def stream_blur_live(db: Session, user_id: str, video_id: str, profile_id: str |
     headers = {"Content-Type": "video/mp4", "Cache-Control": "no-store"}
     return StreamingResponse(_iter(), headers=headers, media_type="video/mp4")
 
-
+# -------------- public export --------------
 __all__ = [
     "_get_profile", "profile_to_dict",
     "_latest_done_job", "_jsonl_path_abs", "_build_jsonl_from_db",
     "_build_min_score_map", "_labels_from_mode_map",
+    "_ffprobe_duration", "_build_audio_filter_from_intervals",
+    "_calc_skip_intervals", "_invert_to_keep",
+    "_ensure_canon_labels_jsonl",        
     "stream_blur_live",
 ]
+

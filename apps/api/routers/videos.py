@@ -158,13 +158,22 @@ def list_videos(
     db: Session = Depends(get_db),
     limit: int = Query(24, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    q: Optional[str] = Query(None, description="Filter by title substring"),
 ):
-    q = select(VideoAsset).order_by(desc(VideoAsset.created_at), desc(VideoAsset.id)).offset(offset).limit(limit)
-    items = db.execute(q).scalars().all()
+    # Ana sorgu
+    stmt = select(VideoAsset).order_by(desc(VideoAsset.created_at), desc(VideoAsset.id))
+
+    # 🔍 Arama filtresi — q varsa başlıkta arar (case-insensitive)
+    if q:
+        stmt = stmt.where(VideoAsset.title.ilike(f"%{q}%"))
+
+    stmt = stmt.offset(offset).limit(limit)
+    items = db.execute(stmt).scalars().all()
+
     out = []
     for v in items:
         poster_key = _read_poster_key(db, v)
-        poster_url = _presign_from_minio_url(poster_key, ttl_seconds=60*60*24) if poster_key else None
+        poster_url = _presign_from_minio_url(poster_key, ttl_seconds=60 * 60 * 24) if poster_key else None
         out.append({
             "id": str(v.id),
             "title": v.title or "Untitled",
@@ -172,6 +181,7 @@ def list_videos(
             "status": v.status,
         })
     return out
+
 
 # ------------------------- DETAIL
 @router.get("/{video_id}")

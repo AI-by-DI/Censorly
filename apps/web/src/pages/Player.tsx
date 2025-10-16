@@ -2,7 +2,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
-  Play, Pause, Volume2, VolumeX, Maximize, SkipForward, Eye, ThumbsUp, ThumbsDown, ArrowLeft
+  Play, Pause, Volume2, VolumeX, Maximize, SkipForward,
+  Eye, ThumbsUp, ThumbsDown, ArrowLeft
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Slider } from "../components/ui/slider";
@@ -19,14 +20,19 @@ type AnalysisEvent = { start: number; end: number; category: string; confidence:
 // --- AUTH ---
 function getToken(): string { return localStorage.getItem("access") || ""; }
 function getAuthHeaders(): HeadersInit { const t = getToken(); return t ? { Authorization: `Bearer ${t}` } : {}; }
-function withAuth(url: string): string { const t = getToken(); return t ? url + (url.includes("?") ? "&" : "?") + `access_token=${encodeURIComponent(t)}` : url; }
+function withAuth(url: string): string {
+  const t = getToken();
+  return t ? url + (url.includes("?") ? "&" : "?") + `access_token=${encodeURIComponent(t)}` : url;
+}
 
 // --- API ---
 function pickRedactedUrlFromJson(j: any): string | undefined { return j?.redacted?.url as string | undefined; }
 async function fetchOriginalUrl(id: string, headers: HeadersInit) {
   const r = await fetch(withAuth(`${API_BASE}/videos/${id}/stream`), { headers });
   if (!r.ok) throw new Error(`stream failed: ${r.status}`);
-  const { url } = await r.json(); if (!url) throw new Error("no stream url"); return url as string;
+  const { url } = await r.json();
+  if (!url) throw new Error("no stream url");
+  return url as string;
 }
 async function pollRedactedUrl(id: string, headers: HeadersInit, timeoutMs = 60_000) {
   const started = Date.now(); let attempt = 0;
@@ -64,8 +70,8 @@ export default function Player() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
 
-  // FEEDBACK logic
-  const [showFeedbackCard, setShowFeedbackCard] = useState(startFiltered);
+  // FEEDBACK – only at the end
+  const [showFeedbackCard, setShowFeedbackCard] = useState(false);
   const [showFeedbackDialog, setShowFeedbackDialog] = useState(false);
   const [feedback, setFeedback] = useState("");
 
@@ -86,7 +92,7 @@ export default function Player() {
   // Require auth for filtered
   useEffect(() => {
     if (censorMode && !getToken()) {
-      toast.error("Filtered Mode için giriş yapmalısınız.");
+      toast.error("You must sign in to use Filtered Mode.");
       setCensorMode(false);
     }
   }, [censorMode]);
@@ -102,16 +108,17 @@ export default function Player() {
         if (!cancelled) {
           setVideoUrl(url);
           setLoading(false);
-          setShowFeedbackCard(censorMode); // only in filtered
           toast.success("Video ready!");
         }
       } catch (e: any) {
         console.error(e);
         if (!cancelled) {
           setLoading(false);
-          toast.error(e?.message === "unauthorized" ? "401 Unauthorized – lütfen oturum açın." :
-                     e?.message === "redaction timeout" ? "Filtered stream hazırlanamadı (timeout)." :
-                     "Could not load video");
+          toast.error(
+            e?.message === "unauthorized" ? "401 Unauthorized — please sign in." :
+            e?.message === "redaction timeout" ? "Filtered stream could not be prepared (timeout)." :
+            "Could not load video"
+          );
         }
       }
     })();
@@ -126,7 +133,7 @@ export default function Player() {
     const onTime = () => setCurrentTimeMs(v.currentTime * 1000);
     const onLoaded = () => setDurationSec(v.duration || 0);
     const onEnded = () => {
-      if (censorMode) setShowFeedbackCard(true);
+      if (censorMode) setShowFeedbackCard(true); // only after ended
       setIsPlaying(false);
     };
 
@@ -204,10 +211,48 @@ export default function Player() {
     window.addEventListener("pointerup", up);
   };
 
+  // --- LOADING OVERLAY (animation + info) ---
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center text-muted-foreground text-xl">
-        Loading video...
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <style>{`
+          .shine {
+            background: linear-gradient(90deg,#fff 0%,#cbd5e1 50%,#fff 100%);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+            animation: shine 2.2s linear infinite;
+            background-size: 200% 100%;
+          }
+          @keyframes shine { 0%{background-position:0% 50%} 100%{background-position:200% 50%} }
+          .dots::after{content:"."; animation: dots 1.4s steps(4,end) infinite}
+          @keyframes dots {0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}100%{content:""}}
+          .eqbar{display:block;width:6px;height:10px;background:#fff;border-radius:3px;opacity:.9;
+                 animation:eq 1s ease-in-out infinite}
+          .eqbar+.eqbar{margin-left:6px}
+          .delay-1{animation-delay:.1s}.delay-2{animation-delay:.2s}.delay-3{animation-delay:.3s}.delay-4{animation-delay:.4s}
+          @keyframes eq {0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1.2)}}
+        `}</style>
+        <div className="flex flex-col items-center gap-6 text-center px-6">
+          <h2 className="text-2xl md:text-3xl font-semibold tracking-wide shine">
+            Processing with your filters<span className="dots" />
+          </h2>
+
+          <div className="flex items-end gap-1 h-10">
+            <span className="eqbar" />
+            <span className="eqbar delay-1" />
+            <span className="eqbar delay-2" />
+            <span className="eqbar delay-3" />
+            <span className="eqbar delay-4" />
+          </div>
+
+          <p className="text-sm md:text-base text-white/70 max-w-xl">
+            This may take <strong>a few minutes</strong> depending on the video. Playback will start automatically when it’s ready.
+          </p>
+
+          <div className="flex items-center gap-3">
+            <Button variant="secondary" onClick={() => setCensorMode(false)}>Watch original</Button>
+            <Button variant="ghost" onClick={() => window.history.back()}>Go back</Button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -316,7 +361,6 @@ export default function Player() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Filtered Mode toggle KALDIRILDI */}
             <Button size="icon" variant="ghost" onClick={goFullscreen}>
               <Maximize className="w-5 h-5" />
             </Button>
@@ -348,7 +392,7 @@ export default function Player() {
         </DialogContent>
       </Dialog>
 
-      {/* feedback card — only when filtered */}
+      {/* feedback card — only after ended in filtered mode */}
       {censorMode && showFeedbackCard && !showWarning && (
         <div className="absolute bottom-8 right-8 z-20 p-6 bg-card border border-border rounded-xl shadow-xl max-w-sm">
           <h3 className="font-semibold mb-2">Did the filtering work correctly?</h3>
