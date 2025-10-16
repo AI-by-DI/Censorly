@@ -4,7 +4,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { useCensorStore } from "../store/censorStore";
 import { cn } from "../lib/utils"; // shadcn kullanıyorsan genelde var
-
+import React from "react";
 const Header = () => {
   const { enabled, toggle } = useCensorStore();
 

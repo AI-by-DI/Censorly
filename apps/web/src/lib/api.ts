@@ -1,4 +1,3 @@
-// apps/web/src/lib/api.ts
 import axios, { AxiosHeaders, AxiosRequestConfig, InternalAxiosRequestConfig } from "axios";
 
 /** --------- Base URL --------- */
@@ -61,7 +60,7 @@ api.interceptors.response.use(
       if (!refreshing) {
         refreshing = true;
         try {
-          // Backend’in mevcut sürümüne göre: { token: <refresh> }
+          // Backend: { token: <refresh> }
           const { data } = await axios.post(
             `${BASE_URL}/auth/refresh`,
             { token: tokenStore.refresh },
@@ -102,20 +101,21 @@ api.interceptors.response.use(
  *  USER / AUTH (kullanıcı tabanlı)
  *  ================================================================ */
 export const authApi = {
-    async register(
-      email: string,
-      password: string,
-      country?: string | null,
-      birthYear?: number | null
-    ) {
-      const body: Record<string, any> = { email, password };
-      if (country) body.country = country;
-      if (birthYear) body.birth_year = birthYear; // ✅ yaş yerine yıl
+  async register(
+    email: string,
+    password: string,
+    country?: string | null,
+    birthYear?: number | null
+  ) {
+    const body: Record<string, any> = { email, password };
+    if (country) body.country = country;
+    // null/undefined hariç tüm numeric değerleri gönder (0 vs problem çıkarmaz)
+    if (birthYear !== null && birthYear !== undefined) body.birth_year = birthYear;
 
-      const { data } = await api.post("/auth/register", body, {
-        headers: { "Content-Type": "application/json" },
-      });
-      return data;
+    const { data } = await api.post("/auth/register", body, {
+      headers: { "Content-Type": "application/json" },
+    });
+    return data;
   },
 
   async login(email: string, password: string) {

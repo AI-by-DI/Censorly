@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { toast } from "sonner";
+import React from "react";
 import { countryOptions } from "../lib/worldCountries"; // 🌍 entegre edildi
 
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
