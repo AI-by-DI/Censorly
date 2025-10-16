@@ -9,6 +9,8 @@ import Player from "./pages/Player";
 import VideoDetail from "./pages/VideoDetail";
 import NotFound from "./pages/NotFound";
 import Landing from "./pages/Landing";
+import ForgotPasswordPage from "./pages/ForgotPassword";
+
 
 function useAuthState() {
   const [authed, setAuthed] = useState(!!localStorage.getItem("access"));
@@ -91,6 +93,9 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+
+
 
         <Route path="*" element={<NotFound />} />
       </Routes>

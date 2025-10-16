@@ -1,12 +1,12 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { authApi } from "../lib/api";
-import RegisterForm from "../components/RegisterForm";
+import { useNavigate, useLocation, Link } from "react-router-dom";
+import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Card, CardContent } from "../components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
-import { toast } from "sonner";
+import RegisterForm from "../components/RegisterForm";
+import { authApi } from "../lib/api";
 
 type TabKey = "login" | "register";
 
@@ -20,8 +20,6 @@ export default function LoginPage() {
   }, [location.search]);
 
   const [tab, setTab] = useState<TabKey>(initialTab);
-
-  // 🔁 URL ?tab= değişirse sekmeyi de güncelle
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const next = params.get("tab") === "register" ? "register" : "login";
@@ -33,10 +31,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   const onLogin = async () => {
-    if (!email.trim() || !pw) {
-      toast.error("E-posta ve parola gerekli");
-      return;
-    }
+    if (!email.trim() || !pw) return toast.error("E-posta ve parola gerekli");
     try {
       setLoading(true);
       await authApi.login(email.trim(), pw);
@@ -50,58 +45,80 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background text-foreground px-4">
-      <Card className="w-full max-w-md bg-card border border-border rounded-2xl shadow-lg animate-fade-in">
-        <CardContent className="p-8">
-          <h1 className="text-3xl font-bold text-center mb-6">Censorly</h1>
+    <div className="relative min-h-[100svh] w-full overflow-hidden text-white">
+      <div
+        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+        style={{ backgroundImage: "url('/landing.jpg')" }}
+      />
+      <div className="absolute inset-0 bg-black/50" />
 
-          <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} className="w-full">
-            <TabsList className="grid grid-cols-2 w-full mb-6">
-              <TabsTrigger value="login">Giriş Yap</TabsTrigger>
-              <TabsTrigger value="register">Kayıt Ol</TabsTrigger>
-            </TabsList>
+      <div className="relative z-40 min-h-[100svh] flex items-center justify-center px-4 py-10">
+        <Card className="w-full max-w-md bg-card/90 backdrop-blur-sm border border-white/10 rounded-2xl shadow-xl">
+          <CardContent className="p-8">
+            <h2 className="text-3xl font-bold text-center mb-6 text-white">Censorly</h2>
 
-            {/* LOGIN */}
-            <TabsContent value="login">
-              <div className="space-y-4">
-                <div>
-                  <label className="text-sm text-muted-foreground">E-posta</label>
-                  <Input
-                    type="email"
-                    placeholder="you@example.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
+            <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} className="w-full">
+              <TabsList className="grid grid-cols-2 w-full mb-6">
+                <TabsTrigger value="login">Giriş Yap</TabsTrigger>
+                <TabsTrigger value="register">Kayıt Ol</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="login">
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm text-muted-foreground">E-posta</label>
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-muted-foreground">Parola</label>
+                    <Input
+                      type="password"
+                      placeholder="••••••••"
+                      value={pw}
+                      onChange={(e) => setPw(e.target.value)}
+                    />
+                  </div>
+
+                  <Button className="w-full mt-2" onClick={onLogin} disabled={loading}>
+                    {loading ? "Giriş yapılıyor..." : "Giriş Yap"}
+                  </Button>
+
+                  {/* Şifremi unuttum */}
+                  <p className="mt-3 text-center text-sm text-white/70">
+                    Parolanı mı unuttun?{" "}
+                    <Link to="/forgot-password" className="text-red-400 hover:text-red-300 underline">
+                      Sıfırla
+                    </Link>
+                  </p>
                 </div>
 
-                <div>
-                  <label className="text-sm text-muted-foreground">Parola</label>
-                  <Input
-                    type="password"
-                    placeholder="••••••••"
-                    value={pw}
-                    onChange={(e) => setPw(e.target.value)}
-                  />
-                </div>
+                <p className="mt-4 text-center text-sm text-white/70">
+                  Hesabın yok mu?{" "}
+                  <Link to="/login?tab=register" className="text-red-400 hover:text-red-300 underline">
+                    Kayıt ol
+                  </Link>
+                </p>
+              </TabsContent>
 
-                <Button className="w-full mt-2" onClick={onLogin} disabled={loading}>
-                  {loading ? "Giriş yapılıyor..." : "Giriş Yap"}
-                </Button>
-              </div>
-            </TabsContent>
-
-            {/* REGISTER */}
-            <TabsContent value="register">
-              <RegisterForm
-                // ⬇️ Kayıt başarılı olunca login sekmesine geçir
-                onSuccess={() => {
-                  setTab("login");
-                }}
-              />
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
+              <TabsContent value="register">
+                <RegisterForm onSuccess={() => setTab("login")} />
+                <p className="mt-4 text-center text-sm text-white/70">
+                  Zaten hesabın var mı?{" "}
+                  <Link to="/login?tab=login" className="text-red-400 hover:text-red-300 underline">
+                    Giriş yap
+                  </Link>
+                </p>
+              </TabsContent>
+            </Tabs>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

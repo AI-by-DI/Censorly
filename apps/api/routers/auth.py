@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Depends,Query,Form,Body, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, OAuth2PasswordBearer
-from fastapi.security import HTTPBearer
+from fastapi import APIRouter, Depends, Query, Form, Body, HTTPException, Request, BackgroundTasks
+from fastapi.security import HTTPAuthorizationCredentials, OAuth2PasswordBearer, HTTPBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from ..core.db import get_db
 from ..core.di import get_user_repo, get_redis
 from ..repositories.user_repo import UserRepo
-from ..schemas.auth import RegisterIn, LoginIn, TokenPair
+from ..schemas.auth import RegisterIn, LoginIn, TokenPair, ResetPasswordIn
 from ..schemas.user import UserOut
-from ..services.auth_service import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
+from ..services.auth_service import (
+    hash_password, verify_password, create_access_token,
+    create_refresh_token, decode_token
+)
+import time
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2 = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -18,12 +21,14 @@ def _ensure_not_blacklisted(redis, jti: str):
     if redis.sismember("jwt:blacklist", jti):
         raise HTTPException(status_code=401, detail="token_revoked")
 
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(auth_scheme),
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(auth_scheme),
     db: Session = Depends(get_db),
-    redis=Depends(get_redis),
+    redis = Depends(get_redis),
 ) -> UserOut:
-    token = credentials.credentials
-    payload = decode_token(token)
+    token = credentials.credentials if credentials else None
+    if not token:
+        raise HTTPException(status_code=401, detail="missing_token")
     try:
         payload = decode_token(token)
     except Exception:
@@ -39,8 +44,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(auth_sc
         raise HTTPException(status_code=401, detail="user_not_found")
     return UserOut(**dict(row))
 
-# (basit rate-limit)
-import time
 def ratelimit(redis, key: str, limit:int=5, window:int=60):
     now = int(time.time())
     p = redis.pipeline()
@@ -91,36 +94,24 @@ def me(current: UserOut = Depends(get_current_user)):
 
 @router.post("/logout", status_code=204)
 def logout(
-    # 1) Öncelik: Authorization: Bearer <access>
     credentials: HTTPAuthorizationCredentials | None = Depends(auth_scheme),
-
-    # 2) Geriye dönük uyumluluk: query
     access_token_q: str | None = Query(None),
     refresh_token_q: str | None = Query(None),
-
-    # 3) Alternatif: form/json body
     access_token_f: str | None = Form(None),
     refresh_token_f: str | None = Form(None),
     access_token_b: str | None = Body(None, embed=True),
     refresh_token_b: str | None = Body(None, embed=True),
-
     redis = Depends(get_redis),
     db: Session = Depends(get_db),
     repo: UserRepo = Depends(get_user_repo),
 ):
-    # access_token kaynaklarını sırayla dene (header > body > form > query)
     access_token = (
         (credentials.credentials if credentials else None)
-        or access_token_b
-        or access_token_f
-        or access_token_q
+        or access_token_b or access_token_f or access_token_q
     )
     refresh_token = refresh_token_b or refresh_token_f or refresh_token_q
-
     if not access_token:
         raise HTTPException(status_code=422, detail="access_token_required")
-
-    # access token'ı blacklist et
     try:
         acc = decode_token(access_token)
         redis.sadd("jwt:blacklist", acc["jti"])
@@ -128,8 +119,6 @@ def logout(
         redis.expire("jwt:blacklist", ttl)
     except Exception:
         pass
-
-    # refresh varsa revoke et
     if refresh_token:
         try:
             ref = decode_token(refresh_token)
@@ -138,3 +127,27 @@ def logout(
         except Exception:
             pass
     return
+
+@router.post("/reset-password")
+def reset_password(
+    email: str = Form(...),
+    new_password: str = Form(...),
+    db: Session = Depends(get_db),
+    repo: UserRepo = Depends(get_user_repo),
+):
+    print("[RESET] request received", {"email": email})  # 🔎 sunucu logu
+    if not email or not new_password:
+        print("[RESET] missing field(s)")
+        raise HTTPException(status_code=422, detail="email_and_new_password_required")
+    if len(new_password) < 8:
+        print("[RESET] too short password")
+        raise HTTPException(status_code=422, detail="password_too_short")
+
+    row = db.execute(text("SELECT id FROM users WHERE email=:e"), {"e": email}).mappings().first()
+    if not row:
+        print("[RESET] user not found")
+        raise HTTPException(status_code=404, detail="user_not_found")
+
+    repo.update_password_hash(row["id"], hash_password(new_password))
+    print("[RESET] password updated OK")
+    return {"detail": "password_reset_success"}
