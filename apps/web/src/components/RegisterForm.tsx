@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
-import { useNavigate } from "react-router-dom"; // ✅ yönlendirme için eklendi
+import { useNavigate } from "react-router-dom";
 import { authApi } from "../lib/api";
 import { Input } from "../components/ui/input";
 import { Button } from "../components/ui/button";
@@ -11,12 +11,16 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { toast } from "sonner";
-import { countryOptions } from "../lib/worldCountries"; // 🌍 entegre edildi
+import { countryOptions } from "../lib/worldCountries";
 
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export default function RegisterForm() {
-  const navigate = useNavigate(); // ✅ yönlendirme hook'u
+export default function RegisterForm({
+  onSuccess,
+}: {
+  onSuccess?: () => void;
+}) {
+  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [country, setCountry] = useState<string | null>(null);
@@ -52,7 +56,12 @@ export default function RegisterForm() {
         birthYear ? Number(birthYear) : null
       );
       toast.success("Kayıt başarılı 🎉 Şimdi giriş yapabilirsiniz.");
-      navigate("/login"); // ✅ başarılı olunca login sayfasına yönlendir
+
+      // 🔁 Üst bileşene haber ver (sekme login'e geçsin)
+      onSuccess?.();
+
+      // 🔒 URL'i de güncelle (yeniden girişte login sekmesiyle gelsin)
+      navigate("/login?tab=login", { replace: true });
     } catch (e: any) {
       const d = e?.response?.data;
       toast.error(
@@ -69,7 +78,6 @@ export default function RegisterForm() {
 
   return (
     <div className="space-y-4 animate-fade-in">
-      {/* E-posta */}
       <div>
         <label className="text-sm text-muted-foreground">E-posta</label>
         <Input
@@ -80,7 +88,6 @@ export default function RegisterForm() {
         />
       </div>
 
-      {/* Parola */}
       <div>
         <label className="text-sm text-muted-foreground">Parola</label>
         <Input
@@ -91,7 +98,6 @@ export default function RegisterForm() {
         />
       </div>
 
-      {/* Ülke Seçimi */}
       <div>
         <label className="text-sm text-muted-foreground">Ülke (opsiyonel)</label>
         <Select value={country ?? ""} onValueChange={setCountry}>
@@ -111,7 +117,6 @@ export default function RegisterForm() {
         </Select>
       </div>
 
-      {/* Doğum Yılı */}
       <div>
         <label className="text-sm text-muted-foreground">Doğum Yılı</label>
         <Select value={birthYear} onValueChange={setBirthYear}>
@@ -128,7 +133,6 @@ export default function RegisterForm() {
         </Select>
       </div>
 
-      {/* Kayıt Butonu */}
       <Button className="w-full mt-2" onClick={submit} disabled={loading}>
         {loading ? "Kaydediliyor..." : "Kayıt Ol"}
       </Button>

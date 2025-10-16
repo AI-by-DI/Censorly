@@ -121,7 +121,7 @@ export default function ProfilePage() {
   return (
     <div className="min-h-screen bg-background">
       <Header />
-      <div className="container mx-auto px-8 pt-32 pb-16">
+      <div className="container mx-auto px-4 md:px-8 pt-28 md:pt-32 pb-16">
         <div className="max-w-4xl mx-auto space-y-8 animate-fade-in">
           {/* Header */}
           <div className="flex justify-between items-center">
@@ -154,7 +154,7 @@ export default function ProfilePage() {
           </div>
 
           {/* Buttons */}
-          <div className="flex gap-4">
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
             <Button size="lg" onClick={handleSave} disabled={saving}>
               <Save className="w-5 h-5 mr-2" />
               {saving ? "Saving..." : "Save Preferences"}

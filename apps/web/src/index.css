@@ -200,3 +200,9 @@
     50%      { height: 36px; opacity: 1; }
   }
 }
+/* iOS çentik güvenli alan yardımcıları */
+.safe-top   { padding-top: max(1rem, env(safe-area-inset-top)); }
+.safe-bottom{ padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+
+/* iOS/Android viewport buglarına karşı gerçek ekran yüksekliği */
+:root { --vh: 1svh; }

@@ -1,13 +1,34 @@
-// src/components/Footer.tsx
 import { Github, Linkedin } from "lucide-react";
 
-export default function Footer() {
+interface FooterProps {
+  transparent?: boolean; // Landing gibi arka planın açık olduğu sayfalarda
+}
+
+export default function Footer({ transparent = false }: FooterProps) {
   return (
-    <footer className="w-full border-t border-border bg-background/80 backdrop-blur-sm mt-16">
-      <div className="container mx-auto px-8 py-6 flex flex-col md:flex-row items-center justify-between text-sm text-muted-foreground">
+    <footer
+      className={`w-full border-t ${
+        transparent
+          ? "border-white/10 bg-transparent backdrop-blur-[2px]"
+          : "border-border bg-background/80 backdrop-blur-sm mt-16"
+      }`}
+    >
+      <div
+        className={`container mx-auto px-8 py-6 flex flex-col md:flex-row items-center justify-between text-sm ${
+          transparent ? "text-white/80" : "text-muted-foreground"
+        }`}
+      >
         {/* Sol kısım */}
         <p className="text-center md:text-left">
-          © {new Date().getFullYear()} <span className="font-semibold text-primary">Censorly</span>. All rights reserved.
+          © {new Date().getFullYear()}{" "}
+          <span
+            className={`font-semibold ${
+              transparent ? "text-red-400" : "text-primary"
+            }`}
+          >
+            Censorly
+          </span>
+          . All rights reserved.
         </p>
 
         {/* Sağ kısım */}
@@ -16,27 +37,25 @@ export default function Footer() {
             href="https://github.com/AI-by-DI/Censorly"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 hover:text-primary transition-colors"
+            className={`flex items-center gap-1 hover:text-red-400 transition-colors`}
           >
             <Github className="w-4 h-4" /> GitHub
           </a>
 
-          {/* İlayda LinkedIn */}
           <a
             href="https://www.linkedin.com/in/ilayda-akyuz/"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 hover:text-primary transition-colors"
+            className="flex items-center gap-1 hover:text-red-400 transition-colors"
           >
             <Linkedin className="w-4 h-4" /> İlayda Akyüz
           </a>
 
-          {/* Didar'ın LinkedIn */}
           <a
             href="https://www.linkedin.com/in/didar-nur-bilgin/"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 hover:text-primary transition-colors"
+            className="flex items-center gap-1 hover:text-red-400 transition-colors"
           >
             <Linkedin className="w-4 h-4" /> Didar Nur Bilgin
           </a>

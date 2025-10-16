@@ -48,7 +48,7 @@ export default function MovieCard({
       onClick={onPlay}
 className={
   censorEnabled
-    ? "bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-semibold shadow-md shadow-amber-900/30 transition-all"
+    ? "bg-green-400 hover:bg-green-300 text-black font-medium shadow-md shadow-green-900/20 transition-all"
     : "bg-primary hover:bg-primary/90 text-primary-foreground"
 }
 

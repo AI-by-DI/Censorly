@@ -7,9 +7,7 @@ import {
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Slider } from "../components/ui/slider";
-import {
-  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle
-} from "../components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Textarea } from "../components/ui/textarea";
 import { toast } from "sonner";
 
@@ -66,6 +64,7 @@ export default function Player() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
@@ -75,7 +74,7 @@ export default function Player() {
   const [showFeedbackDialog, setShowFeedbackDialog] = useState(false);
   const [feedback, setFeedback] = useState("");
 
-  const [analysis, setAnalysis] = useState<AnalysisEvent[]>([]);
+  const [analysis] = useState<AnalysisEvent[]>([]);
   const [videoUrl, setVideoUrl] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
@@ -84,12 +83,14 @@ export default function Player() {
   const [volume, setVolume] = useState(0.7);
   const [muted, setMuted] = useState(false);
 
-  // progress drag state
-  const [dragging, setDragging] = useState(false);
+  // SEEK / SCRUB
+  const [scrubbing, setScrubbing] = useState(false);
+  const [wasPlayingBeforeDrag, setWasPlayingBeforeDrag] = useState(false);
+  const [bufferedSec, setBufferedSec] = useState(0);
 
   const headers = getAuthHeaders();
 
-  // Require auth for filtered
+  // auth check
   useEffect(() => {
     if (censorMode && !getToken()) {
       toast.error("You must sign in to use Filtered Mode.");
@@ -97,7 +98,7 @@ export default function Player() {
     }
   }, [censorMode]);
 
-  // Load video URL on mode/id change
+  // load url
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -125,37 +126,73 @@ export default function Player() {
     return () => { cancelled = true; };
   }, [id, censorMode]);
 
-  // Time / duration tracking + volume sync
+  // duration & time tracking (robust)
   useEffect(() => {
     const v = videoRef.current; if (!v) return;
     v.volume = volume; v.muted = muted;
 
-    const onTime = () => setCurrentTimeMs(v.currentTime * 1000);
-    const onLoaded = () => setDurationSec(v.duration || 0);
+    const updateBuffered = () => {
+      try {
+        const end = v.buffered?.length ? v.buffered.end(v.buffered.length - 1) : 0;
+        setBufferedSec(isFinite(end) ? end : 0);
+      } catch {}
+    };
+
+    const updateDuration = () => {
+      let d = v.duration;
+      // fallbacks when duration is not yet known or 0
+      if (!isFinite(d) || !d) {
+        try { if (v.seekable?.length) d = v.seekable.end(v.seekable.length - 1); } catch {}
+      }
+      if (!isFinite(d) || !d) {
+        try { if (v.buffered?.length) d = v.buffered.end(v.buffered.length - 1); } catch {}
+      }
+      setDurationSec(isFinite(d) ? d : 0);
+      updateBuffered();
+    };
+
+    const onTime = () => {
+      setCurrentTimeMs(v.currentTime * 1000);
+      if (!durationSec) updateDuration();
+    };
+
+    const onLoadedMeta = () => updateDuration();
+    const onDurationChange = () => updateDuration();
+    const onCanPlay = () => updateDuration();
+    const onProgress = () => updateBuffered();
     const onEnded = () => {
-      if (censorMode) setShowFeedbackCard(true); // only after ended
+      if (censorMode) setShowFeedbackCard(true);
       setIsPlaying(false);
     };
 
     v.addEventListener("timeupdate", onTime);
-    v.addEventListener("loadedmetadata", onLoaded);
+    v.addEventListener("loadedmetadata", onLoadedMeta);
+    v.addEventListener("durationchange", onDurationChange);
+    v.addEventListener("canplay", onCanPlay);
+    v.addEventListener("progress", onProgress);
     v.addEventListener("ended", onEnded);
+
+    // ilk deneme
+    updateDuration();
+
     return () => {
       v.removeEventListener("timeupdate", onTime);
-      v.removeEventListener("loadedmetadata", onLoaded);
+      v.removeEventListener("loadedmetadata", onLoadedMeta);
+      v.removeEventListener("durationchange", onDurationChange);
+      v.removeEventListener("canplay", onCanPlay);
+      v.removeEventListener("progress", onProgress);
       v.removeEventListener("ended", onEnded);
     };
-  }, [volume, muted, censorMode]);
+  }, [volume, muted, censorMode, durationSec]);
 
-  const pct = durationSec ? Math.min(100, (currentTimeMs / (durationSec * 1000)) * 100) : 0;
+  const playedPct = durationSec ? Math.min(100, (currentTimeMs / 1000 / durationSec) * 100) : 0;
 
+  // skip/blur demo
   const handleAction = (action: "skip" | "blur" | "continue") => {
     setShowWarning(false);
     const v = videoRef.current; if (!v) return;
     if (action === "skip") {
-      const now = currentTimeMs;
-      const nextEvent = analysis.find(a => a.start > now);
-      v.currentTime = nextEvent ? nextEvent.start / 1000 : v.currentTime + 2;
+      v.currentTime = Math.min(v.duration || v.currentTime + 2, v.currentTime + 10);
       toast.success("Scene skipped!");
     } else if (action === "blur") {
       toast.success("Scene blurred (demo)");
@@ -164,7 +201,7 @@ export default function Player() {
     }
   };
 
-  // Feedback button handlers
+  // feedback
   const onFeedbackYes = () => setShowFeedbackCard(false);
   const onFeedbackNo  = () => setShowFeedbackDialog(true);
   const submitFeedback = async () => {
@@ -181,7 +218,7 @@ export default function Player() {
     }
   };
 
-  // Fullscreen
+  // fullscreen
   const goFullscreen = () => {
     const root = containerRef.current || videoRef.current;
     if (!root) return;
@@ -192,62 +229,79 @@ export default function Player() {
     }
   };
 
-  // progress seeking helpers
-  const handleSeekPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const v = videoRef.current; if (!v || !durationSec) return;
-    const bar = e.currentTarget;
+  // --- SCRUB HELPERS (window listeners + pointer/mouse/touch) ---
+  const seekAtClientX = (clientX: number) => {
+    const v = videoRef.current, bar = barRef.current;
+    if (!v || !bar || !durationSec) return;
     const rect = bar.getBoundingClientRect();
-    const clamp = (x: number, a: number, b: number) => Math.min(b, Math.max(a, x));
-    const seekTo = (clientX: number) => {
-      const p = clamp((clientX - rect.left) / rect.width, 0, 1);
-      v.currentTime = p * durationSec;
-      setCurrentTimeMs(v.currentTime * 1000);
-    };
-    setDragging(true);
-    seekTo(e.clientX);
-    const move = (ev: PointerEvent) => seekTo(ev.clientX);
-    const up   = () => { setDragging(false); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    const p = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    v.currentTime = p * durationSec;
+    setCurrentTimeMs(v.currentTime * 1000);
   };
 
-  // --- LOADING OVERLAY (animation + info) ---
+  const startScrub = (clientX: number) => {
+    if (!durationSec) return;
+    const v = videoRef.current;
+    if (v) { setWasPlayingBeforeDrag(!v.paused); v.pause(); }
+    setScrubbing(true);
+    seekAtClientX(clientX);
+
+    const onMovePointer = (ev: PointerEvent) => { ev.preventDefault(); seekAtClientX(ev.clientX); };
+    const onUpPointer = () => {
+      setScrubbing(false);
+      window.removeEventListener("pointermove", onMovePointer);
+      window.removeEventListener("pointerup", onUpPointer);
+      const vv = videoRef.current;
+      if (vv && wasPlayingBeforeDrag) vv.play().catch(() => {});
+    };
+    window.addEventListener("pointermove", onMovePointer, { passive: false });
+    window.addEventListener("pointerup", onUpPointer, { once: true });
+
+    // mouse fallback
+    const onMouseMove = (ev: MouseEvent) => { ev.preventDefault(); seekAtClientX(ev.clientX); };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp, { once: true });
+
+    // touch fallback
+    const onTouchMove = (ev: TouchEvent) => {
+      if (ev.touches?.length) { ev.preventDefault(); seekAtClientX(ev.touches[0].clientX); }
+    };
+    const onTouchEnd = () => {
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+    window.addEventListener("touchmove", onTouchMove, { passive: false });
+    window.addEventListener("touchend", onTouchEnd, { once: true, passive: true });
+  };
+
+  // --- LOADING OVERLAY ---
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <style>{`
-          .shine {
-            background: linear-gradient(90deg,#fff 0%,#cbd5e1 50%,#fff 100%);
-            -webkit-background-clip: text; background-clip: text; color: transparent;
-            animation: shine 2.2s linear infinite;
-            background-size: 200% 100%;
-          }
-          @keyframes shine { 0%{background-position:0% 50%} 100%{background-position:200% 50%} }
-          .dots::after{content:"."; animation: dots 1.4s steps(4,end) infinite}
-          @keyframes dots {0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}100%{content:""}}
-          .eqbar{display:block;width:6px;height:10px;background:#fff;border-radius:3px;opacity:.9;
-                 animation:eq 1s ease-in-out infinite}
-          .eqbar+.eqbar{margin-left:6px}
-          .delay-1{animation-delay:.1s}.delay-2{animation-delay:.2s}.delay-3{animation-delay:.3s}.delay-4{animation-delay:.4s}
-          @keyframes eq {0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1.2)}}
+          .shine{background:linear-gradient(90deg,#fff 0%,#cbd5e1 50%,#fff 100%);-webkit-background-clip:text;background-clip:text;color:transparent;animation:shine 2.2s linear infinite;background-size:200% 100%}
+          @keyframes shine{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+          .dots::after{content:".";animation:dots 1.4s steps(4,end) infinite}
+          @keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}100%{content:""}}
+          .eqbar{display:block;width:6px;height:10px;background:#fff;border-radius:3px;opacity:.9;animation:eq 1s ease-in-out infinite}
+          .eqbar+.eqbar{margin-left:6px}.delay-1{animation-delay:.1s}.delay-2{animation-delay:.2s}.delay-3{animation-delay:.3s}.delay-4{animation-delay:.4s}
+          @keyframes eq{0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1.2)}}
         `}</style>
         <div className="flex flex-col items-center gap-6 text-center px-6">
           <h2 className="text-2xl md:text-3xl font-semibold tracking-wide shine">
             Processing with your filters<span className="dots" />
           </h2>
-
           <div className="flex items-end gap-1 h-10">
-            <span className="eqbar" />
-            <span className="eqbar delay-1" />
-            <span className="eqbar delay-2" />
-            <span className="eqbar delay-3" />
-            <span className="eqbar delay-4" />
+            <span className="eqbar" /><span className="eqbar delay-1" /><span className="eqbar delay-2" />
+            <span className="eqbar delay-3" /><span className="eqbar delay-4" />
           </div>
-
           <p className="text-sm md:text-base text-white/70 max-w-xl">
             This may take <strong>a few minutes</strong> depending on the video. Playback will start automatically when it’s ready.
           </p>
-
           <div className="flex items-center gap-3">
             <Button variant="secondary" onClick={() => setCensorMode(false)}>Watch original</Button>
             <Button variant="ghost" onClick={() => window.history.back()}>Go back</Button>
@@ -258,21 +312,17 @@ export default function Player() {
   }
 
   return (
-    // FULL-BLEED PLAYER
-    <div ref={containerRef} className="h-screen w-screen bg-black overflow-hidden relative">
+    <div ref={containerRef} className="h-[100svh] w-full bg-black overflow-hidden relative">
 
-      {/* Back button – pastel */}
-      <div className="absolute top-4 left-4 z-30">
+      {/* Back */}
+      <div className="absolute top-4 left-4 z-40">
         <button
           onClick={() => (history.length > 1 ? window.history.back() : (window.location.href = "/"))}
-          className="px-3 py-2 rounded-xl backdrop-blur bg-white/10 hover:bg-white/15 text-white/90
-                     border border-white/10 shadow-sm transition-colors"
-          aria-label="Go back"
-          title="Back"
+          className="px-3 py-2 rounded-xl backdrop-blur bg-white/10 hover:bg-white/15 text-white/90 border border-white/10 shadow-sm transition-colors"
+          aria-label="Go back" title="Back"
         >
           <div className="flex items-center gap-2">
-            <ArrowLeft className="w-4 h-4" />
-            <span className="text-sm">Back</span>
+            <ArrowLeft className="w-4 h-4" /><span className="text-sm">Back</span>
           </div>
         </button>
       </div>
@@ -286,6 +336,12 @@ export default function Player() {
         className="absolute inset-0 w-full h-full object-contain bg-black"
         controls={false}
         playsInline
+        preload="metadata"
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget;
+          const d = isFinite(v.duration) && v.duration ? v.duration : 0;
+          if (d) setDurationSec(d);
+        }}
         controlsList="nodownload noplaybackrate nofullscreen"
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
@@ -295,18 +351,52 @@ export default function Player() {
         }}
       />
 
-      {/* timeline (click & drag) */}
-      <div className="absolute bottom-24 left-8 right-8 z-10 select-none">
+      {/* timeline */}
+      <div className="absolute bottom-24 md:bottom-24 left-4 right-4 md:left-8 md:right-8 z-40 select-none safe-bottom">
         <div
-          className={`relative h-2 rounded-full overflow-hidden ${dragging ? "ring-2 ring-white/20" : ""}`}
-          style={{ backgroundColor: "rgba(255,255,255,0.12)" }}
-          onPointerDown={handleSeekPointerDown}
+          ref={barRef}
+          role="slider"
+          aria-valuemin={0}
+          aria-valuemax={Math.floor(durationSec || 0)}
+          aria-valuenow={Math.floor(currentTimeMs / 1000)}
+          className={`relative h-2 md:h-3 rounded-full overflow-hidden cursor-pointer ${scrubbing ? "ring-2 ring-white/20" : ""}`}
+          style={{ backgroundColor: "rgba(255,255,255,0.10)", touchAction: "none" as any }}
+          // start scrub (pointer/mouse/touch)
+          onPointerDown={(e) => startScrub(e.clientX)}
+          onMouseDown={(e) => startScrub(e.clientX)}
+          onTouchStart={(e) => { if (e.touches?.length) startScrub(e.touches[0].clientX); }}
+          // single click seek without pausing
+          onClick={(e) => {
+            if (scrubbing) return;
+            const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+            const p = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+            const v = videoRef.current;
+            if (v && durationSec) v.currentTime = p * durationSec;
+          }}
         >
+          {/* buffered */}
           <div
-            className="absolute h-full transition-[width] duration-100 will-change-[width]"
-            style={{ width: `${pct}%`, backgroundColor: "rgb(239 68 68)" }} // red-500
+            className="absolute inset-y-0 left-0"
+            style={{
+              width: `${bufferedSec && durationSec ? (bufferedSec / durationSec) * 100 : 0}%`,
+              backgroundColor: "rgba(255,255,255,0.25)"
+            }}
+          />
+          {/* played */}
+          <div
+            className="absolute inset-y-0 left-0 transition-[width,background-color] duration-100 will-change-[width]"
+            style={{
+              width: `${playedPct}%`,
+              backgroundColor: playedPct >= 90 ? "rgb(249 115 22)" : "rgb(239 68 68)"
+            }}
+          />
+          {/* knob */}
+          <div
+            className="absolute -top-2 md:-top-1.5 h-5 w-5 md:h-6 md:w-6 rounded-full bg-white/90 shadow-md"
+            style={{ left: `calc(${playedPct}% - 12px)` }}
           />
         </div>
+
         <div className="mt-2 flex items-center justify-between text-xs text-white/70">
           <span>{formatTime(currentTimeMs / 1000)}</span>
           <span>{formatTime(durationSec)}</span>
@@ -314,8 +404,8 @@ export default function Player() {
       </div>
 
       {/* controls */}
-      <div className="absolute bottom-8 left-8 right-8 z-20">
-        <div className="flex items-center justify-between">
+      <div className="absolute bottom-4 md:bottom-8 left-4 right-4 md:left-8 md:right-8 z-30">
+       <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Button
               size="icon"
@@ -324,7 +414,7 @@ export default function Player() {
                 const v = videoRef.current; if (!v) return;
                 v.paused ? v.play() : v.pause();
               }}
-              className="w-12 h-12"
+              className="w-12 h-12 md:w-12 md:h-12"
             >
               {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6" />}
             </Button>
@@ -368,7 +458,7 @@ export default function Player() {
         </div>
       </div>
 
-      {/* warning dialog */}
+      {/* warning */}
       <Dialog open={showWarning} onOpenChange={setShowWarning}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -392,7 +482,7 @@ export default function Player() {
         </DialogContent>
       </Dialog>
 
-      {/* feedback card — only after ended in filtered mode */}
+      {/* feedback (end only) */}
       {censorMode && showFeedbackCard && !showWarning && (
         <div className="absolute bottom-8 right-8 z-20 p-6 bg-card border border-border rounded-xl shadow-xl max-w-sm">
           <h3 className="font-semibold mb-2">Did the filtering work correctly?</h3>

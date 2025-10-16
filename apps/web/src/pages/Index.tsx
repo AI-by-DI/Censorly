@@ -1,11 +1,10 @@
-// src/pages/Index.tsx
 import { useEffect, useMemo, useState } from "react";
-import { Play } from "lucide-react";
+import { Play, SlidersHorizontal } from "lucide-react";
 import { Button } from "../components/ui/button";
 import Header from "../components/Header";
 import Footer from "../components/Footer";
 import CategoryRow from "../components/CategoryRow";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useCensorStore } from "../store/censorStore";
 
 const API_BASE = import.meta.env.VITE_API_BASE as string;
@@ -47,9 +46,7 @@ export default function Index() {
         if (!canceled) setLoading(false);
       }
     })();
-    return () => {
-      canceled = true;
-    };
+    return () => { canceled = true; };
   }, []);
 
   const recommended = useMemo(() => items.slice(0, 6), [items]);
@@ -75,35 +72,43 @@ export default function Index() {
       <Header />
 
       {/* Hero Section */}
-      <section className="relative h-[90vh] mb-8">
+      <section className="relative h-[70svh] md:h-[90vh] mb-6 md:mb-8">
         <div
           className="absolute inset-0 bg-cover bg-center"
           style={{ backgroundImage: "url('/hero-banner.jpg')" }}
         />
         <div className="absolute inset-0 bg-gradient-to-r from-background via-background/60 to-transparent" />
-        <div className="relative container mx-auto h-full flex items-center px-8">
+        <div className="relative container mx-auto h-full flex items-center px-4 md:px-8">
           <div className="max-w-2xl space-y-6 animate-fade-in">
-            <h1 className="text-6xl font-bold leading-tight">The Reckoning</h1>
-            <p className="text-xl text-muted-foreground">
+            <h1 className="text-3xl sm:text-4xl md:text-6xl font-bold leading-tight">The Reckoning</h1>
+            <p className="text-base sm:text-lg md:text-xl text-muted-foreground">
               When darkness falls, only the brave survive. Watch with personalized content filtering.
             </p>
 
-            <div className="flex gap-4">
+            <div className="flex flex-wrap gap-3">
               <Button
                 size="lg"
                 onClick={() => handleWatch()}
-                className={
+                className= {`${
                   enabled
-                    ? "bg-gradient-to-r from-amber-500 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-black font-semibold shadow-md shadow-amber-900/30 transition-all"
-                    : "bg-primary hover:bg-primary/90 text-primary-foreground"
-                }
+                    ? "bg-green-400 hover:bg-green-300 text-black font-medium shadow-md shadow-green-900/20 transition-all"
+    : "bg-primary hover:bg-primary/90 text-primary-foreground"
+                 } w-full sm:w-auto` }
               >
                 <Play className="w-5 h-5 mr-2" />
                 {enabled ? "Watch with Filters" : "Watch Now"}
               </Button>
+
+              {/* İsteğe bağlı ekstra yönlendirme */}
+              <Button asChild variant="outline" className="w-full sm:w-auto rounded-full border-white/20 text-white/90 hover:bg-white/10">
+                <Link to="/profile">
+                  <SlidersHorizontal className="w-4 h-4 mr-2" />
+                  Set Preferences
+                </Link>
+              </Button>
             </div>
 
-            <div className="flex gap-2 flex-wrap">
+           <div className="flex gap-2 flex-wrap pt-1">
               <span className="px-3 py-1 rounded-full text-sm bg-violence/20 text-violence border border-violence/30">
                 Contains Violence
               </span>
@@ -136,6 +141,7 @@ export default function Index() {
           onPlay={(m) => handleWatch(String(m.id))}
         />
       </main>
+
       <Footer />
     </div>
   );
