@@ -34,7 +34,7 @@ CATEGORY_LABELS: Dict[str, List[str]] = {
 BASE_LABEL_THRESHOLDS: Dict[str, float] = {
     "violence": 0.35,
     "nudenet":  0.45,
-    "Clown":    0.25,
+    "Clown":    0.5,
     "Spider":   0.20,
     "Snake":    0.20,
     "blood":    0.16,
