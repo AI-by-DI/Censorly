@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     s3_endpoint: str = "http://minio:9000"
     s3_access_key: str = "minio"
     s3_secret_key: str = "minio12345"
-    s3_bucket: str = "censorly-media"
+    s3_bucket: str = "videos"
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = Field(default=False)
 
