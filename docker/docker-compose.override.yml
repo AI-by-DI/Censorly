@@ -1,0 +1,31 @@
+services:
+  api:
+    # Sadece API konteyneri için bellek limiti ve swap
+    mem_limit: 6g # konteyner RAM limiti
+    memswap_limit: 8g # RAM+swap limiti; swap etkinse işe yarar
+
+    # Analiz sırasında pik RAM'i azaltmak için thread kısıtları
+    environment:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      PYTORCH_NUM_THREADS: "1"
+      OPENCV_OPENCL_RUNTIME: "disabled"
+
+    # İsteğe bağlı: tek worker (aynı anda tek analiz)
+    command:
+      - python
+      - -m
+      - uvicorn
+      - apps.api.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --access-log
+      - --log-level
+      - info
+      # Eğer eşzamanlı analiz istiyorsan (CPU yeterliyse) şunu da kullanabilirsin:
+      # - --workers
+      # - "2"
