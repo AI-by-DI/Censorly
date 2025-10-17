@@ -1,31 +1,54 @@
+# docker/docker-compose.override.yml
+# ================================
+# Censorly Prod Override - (optimized for 8 GB RAM host)
+# ================================
+
 services:
   api:
-    # Sadece API konteyneri için bellek limiti ve swap
-    mem_limit: 6g # konteyner RAM limiti
-    memswap_limit: 8g # RAM+swap limiti; swap etkinse işe yarar
-
-    # Analiz sırasında pik RAM'i azaltmak için thread kısıtları
+    # API servisi override ayarları
+    mem_limit: "6g" # toplam RAM'in ~%75'i
+    memswap_limit: "8g" # gerektiğinde swap'ı da kullanabilir
+    shm_size: "1g" # /dev/shm: OpenCV ve ffmpeg için
+    ports:
+      - "8100:8000" # host:container port eşlemesi
+    volumes:
+      - ../runtime/api-tmp:/tmp # geçici dosyalar diske yazılsın
     environment:
+      # Performans & thread ayarları
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
       NUMEXPR_NUM_THREADS: "1"
       PYTORCH_NUM_THREADS: "1"
       OPENCV_OPENCL_RUNTIME: "disabled"
+      TMPDIR: "/tmp"
+      # Ekstra loglama istersen
+      LOG_LEVEL: "info"
+    restart: unless-stopped
 
-    # İsteğe bağlı: tek worker (aynı anda tek analiz)
-    command:
-      - python
-      - -m
-      - uvicorn
-      - apps.api.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --access-log
-      - --log-level
-      - info
-      # Eğer eşzamanlı analiz istiyorsan (CPU yeterliyse) şunu da kullanabilirsin:
-      # - --workers
-      # - "2"
+  web:
+    ports:
+      - "8101:80" # Web arayüzü dışa açılan port
+    environment:
+      VITE_API_URL: "http://194.146.50.83:8100"
+    restart: unless-stopped
+
+  pgadmin:
+    # PostgreSQL yönetim arayüzü
+    image: dpage/pgadmin4
+    container_name: censorly_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "admin@censorly.com"
+      PGADMIN_DEFAULT_PASSWORD: "admin"
+    ports:
+      - "5050:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+# ================================
+# Notlar:
+# - override dosyası sadece production davranışını genişletir.
+# - Bellek sınırlarını Docker'a bildirir (OOM riskini azaltır).
+# - /tmp diske bağlandığı için büyük videolarda RAM patlaması önlenir.
+# ================================
