@@ -2,8 +2,16 @@
 # ================================
 # Censorly Prod Override - (optimized for 8 GB RAM host)
 # ================================
-
 services:
+  minio:
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9101"
+    ports:
+      - "9100:9000" # S3 API (PUBLIC_S3_ENDPOINT= http://<ip>:9100 ile uyumlu)
+      - "9101:9101" # Web Konsol
   api:
     # API servisi override ayarları
     mem_limit: "6g" # toplam RAM'in ~%75'i
