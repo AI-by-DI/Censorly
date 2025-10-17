@@ -32,14 +32,19 @@ services:
   redis:
     image: redis:7-alpine
     container_name: censorly_redis
-    # NOT: ${...} kullanmıyoruz; $REDIS_PASSWORD var/yok diye test ediyoruz.
-    command: >
-      sh -lc 'if [ -n "$REDIS_PASSWORD" ];
-              then exec redis-server --appendonly yes --requirepass "$REDIS_PASSWORD";
-              else exec redis-server --appendonly yes;
-              fi'
     env_file:
       - ../.env.prod
+    command: >
+      sh -lc '
+        set -e
+        mkdir -p /usr/local/etc/redis;
+        if [ -n "$REDIS_PASSWORD" ]; then
+          printf "requirepass %s\n" "$REDIS_PASSWORD" > /usr/local/etc/redis/redis.conf;
+          exec redis-server /usr/local/etc/redis/redis.conf --appendonly yes;
+        else
+          exec redis-server --appendonly yes;
+        fi
+      '
     volumes:
       - redisdata:/data
     restart: unless-stopped
