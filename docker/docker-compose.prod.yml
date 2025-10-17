@@ -35,16 +35,9 @@ services:
     env_file:
       - ../.env.prod
     command: >
-      sh -lc '
-        set -e
-        mkdir -p /usr/local/etc/redis;
-        if [ -n "$REDIS_PASSWORD" ]; then
-          printf "requirepass %s\n" "$REDIS_PASSWORD" > /usr/local/etc/redis/redis.conf;
-          exec redis-server /usr/local/etc/redis/redis.conf --appendonly yes;
-        else
-          exec redis-server --appendonly yes;
-        fi
-      '
+      sh -lc 'printf "requirepass %s\nappendonly yes\n" "$${REDIS_PASSWORD}" >
+      /usr/local/etc/redis/redis.conf &&
+      exec redis-server /usr/local/etc/redis/redis.conf'
     volumes:
       - redisdata:/data
     restart: unless-stopped
