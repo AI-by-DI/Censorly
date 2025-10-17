@@ -12,28 +12,30 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120
 
-# Önce headless + numpy + uvicorn'u sabitle
+# Requirements yükle + build-time sanity check
 COPY requirements.txt .
 RUN python -m pip install --upgrade pip && \
-    python -m pip install --no-cache-dir \
-      numpy==1.26.4 \
-      opencv-python-headless==4.9.0.80 \
-      "uvicorn[standard]==0.30.6" && \
-    # Kalan bağımlılıkları yükle
-    python -m pip install --no-cache-dir -r requirements.txt --upgrade && \
-    # Yanlışlıkla gelen opencv-python / contrib varsa temizle
-    python -m pip uninstall -y opencv-python opencv-contrib-python || true && \
-    # Build-time doğrulama (fail-fast)
+    python -m pip install --no-cache-dir -r requirements.txt && \
     python - <<'PY'
-import cv2, numpy, uvicorn
-print("Build check -> cv2:", cv2.__version__, "| numpy:", numpy.__version__, "| uvicorn:", uvicorn.__version__)
+import sys
+import fastapi, uvicorn, numpy
+try:
+    import cv2
+except Exception as e:
+    raise SystemExit(f"OpenCV import failed: {e}")
+
+print("Sanity OK:",
+      "fastapi", fastapi.__version__,
+      "uvicorn", uvicorn.__version__,
+      "numpy", numpy.__version__,
+      "cv2", cv2.__version__)
 PY
 
 # Projeyi kopyala ve PYTHONPATH ayarla
 COPY . .
 ENV PYTHONPATH=/app
 
-# Opsiyonel: başlangıçta migrate etmek için bayrak
+# Opsiyonel migration bayrağı ve app ayarları
 ENV APPLY_MIGRATIONS=0 \
     APP_MODULE="apps.api.main:app" \
     PORT=8000
