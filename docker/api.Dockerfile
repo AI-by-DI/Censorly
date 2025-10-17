@@ -12,31 +12,20 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120
 
-# Python bağımlılıkları
+# Önce headless + numpy'ı sabitle (ultralytics opencv-python istese bile önceden headless hazır)
 COPY requirements.txt .
-RUN python -m pip install -r requirements.txt && \
-    python -m pip install alembic==1.14.0
-
-# (Ultralytics yüzünden opencv-python gelirse sök)
-RUN python - <<'PY'
-import subprocess, sys
-try:
-    import pkg_resources
-    dists = {d.project_name.lower() for d in pkg_resources.working_set}
-    if 'opencv-python' in dists:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'uninstall', '-y', 'opencv-python'])
-except Exception as e:
-    print("opencv-python uninstall step warn:", e)
-PY
-
-RUN python - <<'PY'
-import importlib.util, subprocess, sys
-spec = importlib.util.find_spec("cv2")
-if spec is None:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "opencv-python-headless==4.8.1.78"])
-else:
-    import cv2
-    print("cv2 already present:", cv2.__version__)
+RUN python -m pip install --upgrade pip && \
+    python -m pip install --no-cache-dir \
+      numpy==1.26.4 \
+      opencv-python-headless==4.9.0.80 && \
+    # Kalan bağımlılıkları yükle
+    python -m pip install --no-cache-dir -r requirements.txt --upgrade && \
+    # Yanlışlıkla gelen opencv-python / contrib varsa temizle
+    python -m pip uninstall -y opencv-python opencv-contrib-python || true && \
+    # Build-time doğrulama (fail-fast)
+    python - <<'PY'
+import cv2, numpy
+print("Build check -> cv2:", cv2.__version__, "| numpy:", numpy.__version__)
 PY
 
 # Projeyi kopyala ve PYTHONPATH ayarla
@@ -44,7 +33,6 @@ COPY . .
 ENV PYTHONPATH=/app
 
 # Opsiyonel: başlangıçta migrate etmek için bayrak
-# APPLY_MIGRATIONS=1 yaparsan entrypoint alembic upgrade head çalıştırır
 ENV APPLY_MIGRATIONS=0 \
     APP_MODULE="apps.api.main:app" \
     PORT=8000

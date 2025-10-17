@@ -1,10 +1,9 @@
-# temporal_stabilizer.py
+# ai/inference/temporal_stabilizer.py
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple
-import math
 
 # ====== Yardımcı tipler ======
-# Beklenen detection formatı: (x1, y1, x2, y2, score, cls_id)
+# Beklenen detection formatı: (x1, y1, x2, y2, score, cls_id)  ← PİKSEL KOORD.
 Det = Tuple[float, float, float, float, float, int]
 
 def iou(a: Det, b: Det) -> float:
@@ -16,12 +15,12 @@ def iou(a: Det, b: Det) -> float:
     aw = max(0.0, ax2 - ax1); ah = max(0.0, ay2 - ay1)
     bw = max(0.0, bx2 - bx1); bh = max(0.0, by2 - by1)
     den = aw * ah + bw * bh - inter + 1e-9
-    return inter / den
+    return inter / den if den > 0 else 0.0
 
 @dataclass
 class Track:
     tid: int
-    det: Det                       # son bbox+score+cls
+    det: Det                       # son bbox+score+cls (piksel xyxy)
     cls_state: int = -1            # kilitli sınıf (-1: none)
     lock_until_ms: int = 0
     last_seen_ms: int = 0
@@ -45,8 +44,8 @@ class TemporalStabilizer:
         hold_gap_ms: int = 600,
         grace_ms: int = 250,
         iou_match_thr: float = 0.4,
-        min_box_area_frac: float = 0.0015,  # çok küçük kutuları ele (opsiyonel)
-        min_conf_map: Dict[int, float] = None,      # son çıkış filtresi
+        min_box_area_frac: float = 0.0015,   # çok küçük kutuları ele (opsiyonel)
+        min_conf_map: Dict[int, float] = None,  # son çıkış filtresi
     ):
         self.enter_thr = enter_thr
         self.exit_thr  = exit_thr
@@ -55,7 +54,7 @@ class TemporalStabilizer:
         self.grace_ms = grace_ms
         self.iou_thr = iou_match_thr
         self.min_area = min_box_area_frac
-        self.min_conf_map = min_conf_map or {0:0.60, 1:0.55, 2:0.58}
+        self.min_conf_map = min_conf_map or {0:0.20, 1:0.1, 2:0.1}
         self.tracks: Dict[int, Track] = {}
         self.next_tid = 1
         self.frame_area = None  # opsiyonel: set_frame_size(w,h)
@@ -65,13 +64,13 @@ class TemporalStabilizer:
         self.frame_area = float(width * height)
 
     def _associate(self, dets: List[Det]) -> Dict[int, Det]:
-        assigned = {}
+        assigned: Dict[int, Det] = {}
         used = set()
         # greedy IoU eşleştirme
         for tid, trk in self.tracks.items():
             best_iou, best_j = 0.0, -1
             for j, d in enumerate(dets):
-                if j in used: 
+                if j in used:
                     continue
                 i = iou(trk.det, d)
                 if i > best_iou:
