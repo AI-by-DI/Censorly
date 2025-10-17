@@ -32,14 +32,18 @@ services:
   redis:
     image: redis:7-alpine
     container_name: censorly_redis
+    # NOT: ${...} kullanmıyoruz; $REDIS_PASSWORD var/yok diye test ediyoruz.
     command: >
-      sh -lc 'exec redis-server --appendonly yes
-      ${REDIS_PASSWORD:+--requirepass "$REDIS_PASSWORD"}'
+      sh -lc 'if [ -n "$REDIS_PASSWORD" ];
+              then exec redis-server --appendonly yes --requirepass "$REDIS_PASSWORD";
+              else exec redis-server --appendonly yes;
+              fi'
     env_file:
       - ../.env.prod
     volumes:
       - redisdata:/data
     restart: unless-stopped
+
   minio:
     image: minio/minio:latest
     container_name: censorly_minio
