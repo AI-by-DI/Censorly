@@ -2,6 +2,8 @@ services:
   db:
     image: postgres:16-alpine
     container_name: censorly_db
+    env_file:
+      - ../.env.prod
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -9,11 +11,22 @@ services:
     # ports: ["55432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   pgadmin:
     image: dpage/pgadmin4
     container_name: censorly_pgadmin
+    env_file:
+      - ../.env.prod
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
@@ -21,12 +34,14 @@ services:
       - "5050:80"
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: censorly_redis
+    env_file:
+      - ../.env.prod
     command:
       [
         "redis-server",
@@ -43,6 +58,8 @@ services:
   minio:
     image: minio/minio:latest
     container_name: censorly_minio
+    env_file:
+      - ../.env.prod
     command: server /data --console-address ":9101"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -62,9 +79,12 @@ services:
     env_file:
       - ../.env.prod
     depends_on:
-      - db
-      - redis
-      - minio
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
     ports: ["8100:8000"]
     restart: unless-stopped
     command: python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
@@ -76,7 +96,11 @@ services:
       args:
         VITE_API_URL: /api
     container_name: censorly_web
-    depends_on: [api]
+    env_file:
+      - ../.env.prod
+    depends_on:
+      api:
+        condition: service_started
     ports: ["8101:80"]
     restart: unless-stopped
 
@@ -88,9 +112,12 @@ services:
   #   env_file:
   #     - ../.env.prod
   #   depends_on:
-  #     - db
-  #     - redis
-  #     - minio
+  #     db:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_started
+  #     minio:
+  #       condition: service_started
   #   working_dir: /app
   #   command: ["python", "apps/worker/main.py"]
   #   restart: unless-stopped
