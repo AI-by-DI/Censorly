@@ -23,7 +23,9 @@ def ensure_dirs():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def download_from_minio(bucket: str, key: str, local_path: str, endpoint: str, access: str, secret: str, secure: bool):
-    client = Minio(endpoint, access_key=access, secret_key=secret, secure=secure)
+    # MinIO client endpoint'i şemasız ister (http/https belirtme), güvenliğini secure flag belirler
+    ep = (endpoint or "").replace("http://", "").replace("https://", "")
+    client = Minio(ep, access_key=access, secret_key=secret, secure=secure)
     client.fget_object(bucket, key, local_path)
 
 def build_detectors(conf: float, iou: float, imgsz: int = 640):
@@ -36,7 +38,7 @@ def build_detectors(conf: float, iou: float, imgsz: int = 640):
     }
     conf_by_label = {
         "violence": 0.4, "blood": 0.15,
-         "alcohol": 0.25,"phobic":0.1
+        "alcohol": 0.25, "phobic": 0.1
     }
     detectors = []
     for label, path in mapping.items():
@@ -215,6 +217,13 @@ def run(
         if jsonl_fp:
             jsonl_fp.close()
 
+def _get_env(name, *alts, default=None):
+    for k in (name,) + alts:
+        v = os.getenv(k)
+        if v:
+            return v
+    return default
+
 if __name__ == "__main__":
     BASE_DIR = pathlib.Path(__file__).resolve().parents[2]
     ENV_PATH = BASE_DIR / "configs" / "ai.env.sample"
@@ -222,7 +231,7 @@ if __name__ == "__main__":
         load_dotenv(dotenv_path=ENV_PATH)
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--minio-bucket", type=str, default=os.getenv("MINIO_BUCKET"))
+    ap.add_argument("--minio-bucket", type=str, default=_get_env("S3_BUCKET", "MINIO_BUCKET"))
     ap.add_argument("--video-key", type=str, default=os.getenv("VIDEO_STORAGE_KEY"))
     ap.add_argument("--stride-ms", type=int, default=int(os.getenv("FRAME_STRIDE_MS", "200")))
     ap.add_argument("--conf", type=float, default=float(os.getenv("CONF_THRESHOLD", "0.5")))
@@ -239,10 +248,11 @@ if __name__ == "__main__":
 
     args = ap.parse_args()
 
-    ENDPOINT = os.getenv("MINIO_ENDPOINT")
-    ACCESS   = os.getenv("MINIO_ACCESS_KEY")
-    SECRET   = os.getenv("MINIO_SECRET_KEY")
-    SECURE   = os.getenv("MINIO_SECURE", "false").lower() == "true"
+    # S3_* öncelikli, yoksa MINIO_* fallback
+    ENDPOINT = _get_env("S3_ENDPOINT", "MINIO_ENDPOINT", default="minio:9000")
+    ACCESS   = _get_env("S3_ACCESS_KEY", "MINIO_ACCESS_KEY")
+    SECRET   = _get_env("S3_SECRET_KEY", "MINIO_SECRET_KEY")
+    SECURE   = (_get_env("S3_USE_SSL", "MINIO_SECURE", default="false") or "false").lower() == "true"
 
     run(
         args.minio_bucket, args.video_key, args.stride_ms, args.conf, args.iou,
