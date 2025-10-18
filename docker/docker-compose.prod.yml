@@ -1,30 +1,38 @@
-version: "3.8"
-
 services:
   db:
     image: postgres:16-alpine
     container_name: censorly_db
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    # ports: ["55432:5432"]
+    env_file:
+      - ../.env.prod
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1 -p 5432",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: censorly_pgadmin
+    env_file:
+      - ../.env.prod
+    ports:
+      - "5050:80"
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: censorly_redis
-    command:
-      [
-        "redis-server",
-        "--appendonly",
-        "yes",
-        "--requirepass",
-        "${REDIS_PASSWORD}",
-      ]
-    # ports: ["6379:6379"]
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
     restart: unless-stopped
@@ -33,12 +41,8 @@ services:
     image: minio/minio:latest
     container_name: censorly_minio
     command: server /data --console-address ":9101"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    # ports:
-    #   - "9100:9000"
-    #   - "9101:9101"
+    env_file:
+      - ../.env.prod
     volumes:
       - miniodata:/data
     restart: unless-stopped
@@ -51,12 +55,16 @@ services:
     env_file:
       - ../.env.prod
     depends_on:
-      - db
-      - redis
-      - minio
-    ports: ["8100:8000"]
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    ports:
+      - "8100:8000"
     restart: unless-stopped
-    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+    command: python -m uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
 
   web:
     build:
@@ -65,24 +73,14 @@ services:
       args:
         VITE_API_URL: /api
     container_name: censorly_web
-    depends_on: [api]
-    ports: ["8101:80"]
+    depends_on:
+      api:
+        condition: service_started
+    env_file:
+      - ../.env.prod
+    ports:
+      - "8101:80"
     restart: unless-stopped
-
-  # worker:
-  #   build:
-  #     context: ..
-  #     dockerfile: docker/worker.Dockerfile
-  #   container_name: censorly_worker
-  #   env_file:
-  #     - ../.env.prod
-  #   depends_on:
-  #     - db
-  #     - redis
-  #     - minio
-  #   working_dir: /app
-  #   command: ["python", "apps/worker/main.py"]
-  #   restart: unless-stopped
 
 volumes:
   pgdata:

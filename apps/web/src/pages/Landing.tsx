@@ -69,8 +69,8 @@ export default function Landing() {
         style={{ backgroundImage: "url('/landing.jpg')" }}
         aria-hidden
       />
-      <div className="absolute inset-0 aurora opacity-[.65]" />
-      <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-black/35 via-black/20 to-black/55" />
+      <div className="absolute inset-0 aurora opacity-[.15]" />
+      
       <div className="absolute inset-0 grain" />
 
       {/* FLOATING BOKEH */}

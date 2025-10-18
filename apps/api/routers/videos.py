@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os, uuid, mimetypes, hashlib, subprocess, json
 from datetime import datetime
-from typing import Optional, Iterable, Dict, Any, List
+from typing import Optional, Iterable, Dict, Any, List, Tuple
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -21,6 +21,45 @@ router = APIRouter(prefix="/videos", tags=["videos"])
 ANALYZER_CMD   = os.getenv("ANALYZER_CMD", "python -m ai.inference.pipeline_analyze")
 _DB_LABELS     = {"alcohol", "blood", "violence", "phobic", "obscene"}
 _PHOBIC_CANON  = {"clown": "Clown", "spider": "Spider", "snake": "Snake"}
+
+# Varsayılan (geri dönüş) harita – istersen koru
+DEFAULT_MIN_CONF_MAP = "phobic=0.10,phobic/clown=0.55,phobic/spider=0.55,phobic/snake=0.20"
+
+# ---- PRESET TABLOSU: düşük/orta/yüksek -> sayısal eşik
+_PRESET_TABLE: Dict[str, Dict[str, float]] = {
+    "alcohol":  {"low": 0.25, "medium": 0.30, "high": 0.45},
+    "blood":    {"low": 0.15, "medium": 0.20, "high": 0.25},
+    "violence": {"low": 0.30, "medium": 0.50, "high": 0.60},
+
+    "phobic":            {"low": 0.10, "medium": 0.10, "high": 0.15},  # genel taban
+    "phobic/clown":      {"low": 0.10, "medium": 0.30, "high": 0.70},
+    "phobic/spider":     {"low": 0.10, "medium": 0.30, "high": 0.70},
+    "phobic/snake":      {"low": 0.10, "medium": 0.30, "high": 0.70},
+    "obscene":           {"low": 0.15, "medium": 0.30, "high": 0.50},
+}
+
+def _coerce_preset(name: str, val: Optional[str]) -> str:
+    v = (val or "medium").strip().lower()
+    if v not in ("low", "medium", "high"):
+        raise HTTPException(status_code=422, detail=f"invalid preset for {name}: {val!r}")
+    return v
+
+def _build_min_conf_map_from_presets(
+    alcohol_p: str, blood_p: str, violence_p: str,
+    clown_p: str, spider_p: str, snake_p: str, obscene_p: str
+) -> str:
+    mp = {
+        "alcohol": _PRESET_TABLE["alcohol"][alcohol_p],
+        "blood": _PRESET_TABLE["blood"][blood_p],
+        "violence": _PRESET_TABLE["violence"][violence_p],
+        "phobic": _PRESET_TABLE["phobic"]["medium"],
+        "phobic/clown": _PRESET_TABLE["phobic/clown"][clown_p],
+        "phobic/spider": _PRESET_TABLE["phobic/spider"][spider_p],
+        "phobic/snake": _PRESET_TABLE["phobic/snake"][snake_p],
+        "obscene": _PRESET_TABLE["obscene"][obscene_p],
+    }
+    parts = [f"{k}={v:.2f}" for k, v in mp.items()]
+    return ",".join(parts)
 
 # ----------------- helpers -----------------
 def _norm_label(label: str, extra: dict | None) -> tuple[str, dict]:
@@ -53,12 +92,19 @@ def _sha256_file(path: str) -> str:
 def _ensure_dir(p: str):
     os.makedirs(os.path.dirname(p), exist_ok=True)
 
-def _run_analyzer_sync(video_local_path: str, jsonl_out: str, job_id: str | None = None) -> None:
+def _run_analyzer_sync(
+    video_local_path: str,
+    jsonl_out: str,
+    job_id: str | None = None,
+    min_conf_map_str: Optional[str] = None,
+) -> None:
     _ensure_dir(jsonl_out)
+    min_map = (min_conf_map_str or DEFAULT_MIN_CONF_MAP)
     cmd = (
         f'{ANALYZER_CMD} '
         f'--local-path "{video_local_path}" '
         f'--out-jsonl-path "{jsonl_out}" '
+        f'--min-conf-map "{min_map}" '
         f'--generate-thresholds '
         + (f'--job-id "{job_id}" ' if job_id else '')
     ).strip()
@@ -119,38 +165,36 @@ def _presign_from_minio_url(minio_url: str | None, ttl_seconds: int = 3600) -> O
         return None
     return presigned_get(bucket, key, ttl_seconds)
 
-def _update_poster_fields(db: Session, video_id: str, key_uri: Optional[str], public_url: Optional[str]):
+# --- Artwork (poster + hero) helpers: migration yapmadan yönet ---
+def _update_artwork_fields(db: Session, video_id: str,
+                           poster_key_uri: Optional[str], poster_public: Optional[str],
+                           hero_key_uri: Optional[str], hero_public: Optional[str]):
     """
-    ORM map'li olsun/olmasın güvenli: ham SQL ile üç alanı birlikte günceller.
-    - poster_key           : minio://bucket/path.ext
-    - poster_storage_key   : minio://bucket/path.ext  (ayrı kolon varsa dolduralım)
-    - poster_url           : presigned http(s) URL (isteğe bağlı)
+    poster_key           : minio://... (dikey)
+    poster_storage_key   : minio://... (hero - yatay)
+    poster_url           : poster'ın presigned linki
+    hero_public          : response'ta döneceğiz (DB kolonu yok, migration istemiyoruz)
     """
     db.execute(
         text("""
             UPDATE video_assets
-               SET poster_key = COALESCE(:key, poster_key),
-                   poster_storage_key = COALESCE(:key, poster_storage_key),
-                   poster_url = COALESCE(:url, poster_url)
+               SET poster_key = COALESCE(:pkey, poster_key),
+                   poster_storage_key = COALESCE(:hkey, poster_storage_key),
+                   poster_url = COALESCE(:purl, poster_url)
              WHERE id = :id
         """),
-        {"key": key_uri, "url": public_url, "id": video_id}
+        {"pkey": poster_key_uri, "hkey": hero_key_uri, "purl": poster_public, "id": video_id}
     )
     db.commit()
 
-def _read_poster_key(db: Session, v: VideoAsset) -> Optional[str]:
-    # ORM'den dene
-    try:
-        val = getattr(v, "poster_key", None)
-        if val:
-            return val
-    except Exception:
-        pass
-    # Raw SQL fallback
-    row = db.execute(text("SELECT poster_key, poster_storage_key FROM video_assets WHERE id = :id"), {"id": str(v.id)}).first()
+def _read_art_keys(db: Session, v: VideoAsset) -> Tuple[Optional[str], Optional[str]]:
+    row = db.execute(
+        text("SELECT poster_key, poster_storage_key FROM video_assets WHERE id = :id"),
+        {"id": str(v.id)}
+    ).first()
     if not row:
-        return None
-    return row[0] or row[1]
+        return None, None
+    return row[0], row[1]
 
 # ------------------------- LIST
 @router.get("")
@@ -160,28 +204,25 @@ def list_videos(
     offset: int = Query(0, ge=0),
     q: Optional[str] = Query(None, description="Filter by title substring"),
 ):
-    # Ana sorgu
     stmt = select(VideoAsset).order_by(desc(VideoAsset.created_at), desc(VideoAsset.id))
-
-    # 🔍 Arama filtresi — q varsa başlıkta arar (case-insensitive)
     if q:
         stmt = stmt.where(VideoAsset.title.ilike(f"%{q}%"))
-
     stmt = stmt.offset(offset).limit(limit)
     items = db.execute(stmt).scalars().all()
 
     out = []
     for v in items:
-        poster_key = _read_poster_key(db, v)
+        poster_key, hero_key = _read_art_keys(db, v)
         poster_url = _presign_from_minio_url(poster_key, ttl_seconds=60 * 60 * 24) if poster_key else None
+        hero_url   = _presign_from_minio_url(hero_key,   ttl_seconds=60 * 60 * 24) if hero_key   else None
         out.append({
             "id": str(v.id),
             "title": v.title or "Untitled",
-            "poster_url": poster_url,
+            "poster_url": poster_url,   # dikey
+            "hero_url": hero_url,       # yatay
             "status": v.status,
         })
     return out
-
 
 # ------------------------- DETAIL
 @router.get("/{video_id}")
@@ -189,34 +230,56 @@ def video_detail(video_id: str, db: Session = Depends(get_db)):
     v = db.get(VideoAsset, video_id)
     if not v:
         raise HTTPException(404, "Video not found")
-    poster_key = _read_poster_key(db, v)
+    poster_key, hero_key = _read_art_keys(db, v)
     poster_url = _presign_from_minio_url(poster_key, ttl_seconds=60*60*24) if poster_key else None
+    hero_url   = _presign_from_minio_url(hero_key,   ttl_seconds=60*60*24) if hero_key   else None
     return {
         "id": str(v.id),
         "title": v.title or "Untitled",
         "storage_key": v.storage_key,
         "poster_url": poster_url,
+        "hero_url": hero_url,
         "size_bytes": v.size_bytes,
         "checksum_sha256": v.checksum_sha256,
         "status": v.status,
     }
 
-# ------------------------- UPLOAD (video + poster)  — poster alanlarını AYNI ENDPOINT’TE günceller
+# ------------------------- UPLOAD (video + poster + hero) — eşik presetleri ile
 @router.post("/upload")
 async def upload_video(
     db: Session = Depends(get_db),
 
     file: UploadFile = File(..., description="Ana video dosyası (mp4)"),
-    poster: UploadFile | None = File(None, description="Kapak görseli (jpg/png)"),
+    poster: UploadFile | None = File(None, description="Poster (dikey jpg/png)"),
+    hero: UploadFile | None   = File(None, description="Hero (yatay jpg/png)"),
 
     title: Optional[str] = Query(None),
     source_url: Optional[str] = Query(None),
+
+    alcohol_preset: Optional[str] = Query("medium", description="low|medium|high"),
+    blood_preset: Optional[str] = Query("medium", description="low|medium|high"),
+    violence_preset: Optional[str] = Query("medium", description="low|medium|high"),
+    phobic_clown_preset: Optional[str] = Query("medium", description="low|medium|high"),
+    phobic_spider_preset: Optional[str] = Query("medium", description="low|medium|high"),
+    phobic_snake_preset: Optional[str] = Query("medium", description="low|medium|high"),
+    obscene_preset: Optional[str] = Query("medium", description="low|medium|high"),
 ):
     tmp_video  = os.path.join("/tmp", f"{uuid.uuid4().hex}_{file.filename or 'video.mp4'}")
     tmp_poster = None
+    tmp_hero   = None
 
     try:
         ensure_bucket(MINIO_DEFAULT_BUCKET)
+
+        # Preset doğrulama ve min-conf-map inşası
+        a_p = _coerce_preset("alcohol", alcohol_preset)
+        b_p = _coerce_preset("blood", blood_preset)
+        v_p = _coerce_preset("violence", violence_preset)
+        c_p = _coerce_preset("phobic/clown", phobic_clown_preset)
+        s_p = _coerce_preset("phobic/spider", phobic_spider_preset)
+        n_p = _coerce_preset("phobic/snake", phobic_snake_preset)
+        o_p = _coerce_preset("obscene", obscene_preset)
+        min_conf_map_str = _build_min_conf_map_from_presets(a_p, b_p, v_p, c_p, s_p, n_p, o_p)
 
         # temp yaz
         with open(tmp_video, "wb") as f:
@@ -225,6 +288,10 @@ async def upload_video(
             tmp_poster = os.path.join("/tmp", f"{uuid.uuid4().hex}_{poster.filename or 'poster.jpg'}")
             with open(tmp_poster, "wb") as pf:
                 pf.write(await poster.read())
+        if hero is not None:
+            tmp_hero = os.path.join("/tmp", f"{uuid.uuid4().hex}_{hero.filename or 'hero.jpg'}")
+            with open(tmp_hero, "wb") as hf:
+                hf.write(await hero.read())
 
         # id / object isimleri
         video_id  = str(uuid.uuid4())
@@ -232,11 +299,15 @@ async def upload_video(
         video_obj = f"videos/{video_id}{v_ext}"
 
         poster_obj = None
+        hero_obj   = None
         if tmp_poster:
             p_ext = os.path.splitext(poster.filename or "")[-1] or ".jpg"
             poster_obj = f"posters/{video_id}{p_ext}"
+        if tmp_hero:
+            h_ext = os.path.splitext(hero.filename or "")[-1] or ".jpg"
+            hero_obj = f"heroes/{video_id}{h_ext}"
 
-        # poster → MinIO (varsa)
+        # görseller → MinIO (varsa)
         poster_key_uri = None
         poster_public  = None
         if poster_obj:
@@ -244,6 +315,14 @@ async def upload_video(
             fput_local_to_minio(tmp_poster, MINIO_DEFAULT_BUCKET, poster_obj, content_type=poster_mime)
             poster_key_uri = f"minio://{MINIO_DEFAULT_BUCKET}/{poster_obj}"
             poster_public  = presigned_get(MINIO_DEFAULT_BUCKET, poster_obj, 60 * 60 * 24)
+
+        hero_key_uri = None
+        hero_public  = None
+        if hero_obj:
+            hero_mime = mimetypes.guess_type(hero.filename or "")[0] or "image/jpeg"
+            fput_local_to_minio(tmp_hero, MINIO_DEFAULT_BUCKET, hero_obj, content_type=hero_mime)
+            hero_key_uri = f"minio://{MINIO_DEFAULT_BUCKET}/{hero_obj}"
+            hero_public  = presigned_get(MINIO_DEFAULT_BUCKET, hero_obj, 60 * 60 * 24)
 
         # video → MinIO
         size_bytes = os.path.getsize(tmp_video)
@@ -263,8 +342,8 @@ async def upload_video(
         )
         db.add(va); db.commit(); db.refresh(va)
 
-        # 🔴 CRITICAL: poster alanlarını BURADA DB’ye yaz (ham SQL, atomik)
-        _update_poster_fields(db, video_id, poster_key_uri, poster_public)
+        # poster (dikey) ve hero (yatay) key'lerini DB'ye yaz (migration yok)
+        _update_artwork_fields(db, video_id, poster_key_uri, poster_public, hero_key_uri, hero_public)
 
         # FE için stream URL
         stream_url = presigned_get(MINIO_DEFAULT_BUCKET, video_obj, 60 * 60)
@@ -279,19 +358,21 @@ async def upload_video(
         db.add(job); db.commit(); db.refresh(job)
 
         jsonl_out = os.path.join("/tmp", f"{job.id}.jsonl")
-        _run_analyzer_sync(tmp_video, jsonl_out, job_id=str(job.id))
+        _run_analyzer_sync(tmp_video, jsonl_out, job_id=str(job.id), min_conf_map_str=min_conf_map_str)
         inserted = _ingest_jsonl_to_db(db, str(job.id), jsonl_out)
-        job.status = "done"; job.finished_at = datetime.utcnow()
+        job.status = "done"; job.finished_at=datetime.utcnow()
         db.commit()
 
         return JSONResponse({
             "id": video_id,
             "title": va.title,
-            "poster_url": poster_public,      # FE burada hemen görür
+            "poster_url": poster_public,  # dikey
+            "hero_url": hero_public,      # yatay (DB kolonu yok ama response'ta var)
             "stream_url": stream_url,
             "analysis_job_id": str(job.id),
             "detections_count": inserted,
             "status": va.status,
+            "min_conf_map": min_conf_map_str,
         })
     except HTTPException:
         raise
@@ -302,6 +383,9 @@ async def upload_video(
         except: pass
         if tmp_poster:
             try: os.remove(tmp_poster)
+            except: pass
+        if tmp_hero:
+            try: os.remove(tmp_hero)
             except: pass
 
 # ------------------------- STREAM

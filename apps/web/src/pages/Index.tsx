@@ -1,3 +1,4 @@
+// src/pages/Index.tsx
 import { useEffect, useMemo, useState } from "react";
 import { Play, SlidersHorizontal } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -6,14 +7,39 @@ import Footer from "../components/Footer";
 import CategoryRow from "../components/CategoryRow";
 import { useNavigate, Link } from "react-router-dom";
 import { useCensorStore } from "../store/censorStore";
+import { toast } from "sonner";
 
 const API_BASE = import.meta.env.VITE_API_BASE as string;
+
+type ApiVideo = {
+  id: string;
+  title: string;
+  poster_url?: string | null; // dikey
+  hero_url?: string | null;   // yatay
+};
 
 type MovieCardT = {
   id: string;
   title: string;
-  image: string;
+  poster: string | null;
+  hero: string | null;
   warnings: string[];
+};
+
+// küçük yardımcılar
+const getAuthHeaders = (): HeadersInit => {
+  const t = localStorage.getItem("access");
+  return t ? { Authorization: `Bearer ${t}` } : {};
+};
+const isPlayableUrl = (u: unknown): u is string =>
+  typeof u === "string" && (/^https?:\/\//i.test(u) || u.startsWith("/"));
+const pickRedactedUrlFromJson = (j: any): string | undefined => {
+  if (isPlayableUrl(j?.redacted?.url)) return String(j.redacted.url);
+  if (isPlayableUrl(j?.stream_url)) return String(j.stream_url);
+  if (isPlayableUrl(j?.url)) return String(j.url);
+  if (isPlayableUrl(j?.downloadUrl)) return String(j.downloadUrl);
+  if (isPlayableUrl(j?.storage_key)) return String(j.storage_key);
+  return undefined;
 };
 
 export default function Index() {
@@ -22,6 +48,7 @@ export default function Index() {
 
   const [items, setItems] = useState<MovieCardT[]>([]);
   const [loading, setLoading] = useState(true);
+  const [heroIdx, setHeroIdx] = useState(0);
 
   useEffect(() => {
     let canceled = false;
@@ -29,34 +56,116 @@ export default function Index() {
       try {
         setLoading(true);
         const r = await fetch(`${API_BASE}/videos?limit=24`);
-        const data: Array<{ id: string; title: string; poster_url?: string | null }> = await r.json();
+        const data: ApiVideo[] = await r.json();
 
-        const placeholders = ["/movie-1.jpg", "/movie-2.jpg", "/movie-3.jpg", "/movie-4.jpg"];
-        const mapped: MovieCardT[] = data.map((v, i) => ({
+        const mapped: MovieCardT[] = data.map((v) => ({
           id: v.id,
           title: v.title || "Untitled",
-          image: v.poster_url || placeholders[i % placeholders.length],
+          poster: v.poster_url ?? null,
+          hero: v.hero_url ?? null,
           warnings: [],
         }));
 
-        if (!canceled) setItems(mapped);
+        if (!canceled) {
+          setItems(mapped);
+          setHeroIdx(0);
+        }
       } catch {
-        if (!canceled) setItems([]);
+        if (!canceled) {
+          setItems([]);
+          setHeroIdx(0);
+        }
       } finally {
         if (!canceled) setLoading(false);
       }
     })();
-    return () => { canceled = true; };
+    return () => {
+      canceled = true;
+    };
   }, []);
 
-  const recommended = useMemo(() => items.slice(0, 6), [items]);
-  const trending = useMemo(() => items.slice(6, 12), [items]);
-  const newlyAdded = useMemo(() => items.slice(12, 18), [items]);
+  // Hero'yu periyodik olarak döndür (12sn)
+  useEffect(() => {
+    if (!items.length) return;
+    const timer = setInterval(() => {
+      setHeroIdx((prev) => (prev + 1) % items.length);
+    }, 12000);
+    return () => clearInterval(timer);
+  }, [items.length]);
 
-  const handleWatch = (videoId?: string) => {
+  const placeholders = useMemo(() => ["/movie-1.jpg", "/movie-2.jpg", "/movie-3.jpg", "/movie-4.jpg"], []);
+
+  // CategoryRow, image bekliyor; poster'ı kullan (yoksa placeholder)
+  const toRow = (arr: MovieCardT[], start: number, end: number) =>
+    arr.slice(start, end).map((m, i) => ({
+      id: m.id,
+      title: m.title,
+      image: m.poster ?? placeholders[i % placeholders.length],
+      warnings: m.warnings,
+    }));
+
+  const recommended = useMemo(() => toRow(items, 0, 6), [items, placeholders]);
+  const trending = useMemo(() => toRow(items, 6, 12), [items, placeholders]);
+  const newlyAdded = useMemo(() => toRow(items, 12, 18), [items, placeholders]);
+
+  // “Watch” davranışı — filtre açıkken profilde hiç filtre yoksa uyar ve player’a gitme
+  const handleWatch = async (videoId?: string) => {
     const id = videoId ?? (items[0]?.id || "");
     if (!id) return;
-    navigate(enabled ? `/player/${id}?mode=censored` : `/player/${id}?mode=original`);
+
+    // Filtre kapalıysa doğrudan orijinal oynatıcı
+    if (!enabled) {
+      navigate(`/player/${id}?mode=original`);
+      return;
+    }
+
+    try {
+      const r = await fetch(
+        `${API_BASE}/redactions/download/${id}?profile_id=active&presigned=true`,
+        { headers: getAuthHeaders() }
+      );
+
+      // Yetkisiz → filtreli izleme kullanılamaz, profile yönelt
+      if (r.status === 401) {
+        toast.error("Filtered Mode için lütfen giriş yapın.");
+        navigate("/profile");
+        return;
+      }
+
+      // 204 => Sansür gerekmez (çoğu servis böyle döner) → profil uyarısı
+      if (r.status === 204) {
+        toast.warning("Sansürlü izleme için önce tercihlerinizi oluşturmanız gerekiyor.");
+        navigate("/profile");
+        return;
+      }
+
+      if (r.ok) {
+        const j = await r.json().catch(() => ({}));
+        // Sunucu “no filters” bayrağı verdiyse veya oynatılabilir URL yoksa
+        if (j?.no_filters === true || j?.reason === "no_filters" || j?.redacted?.reason === "no_filters" || !pickRedactedUrlFromJson(j)) {
+          toast.warning("Sansürlü izleme için önce tercihlerinizi oluşturmanız gerekiyor.");
+          navigate("/profile");
+          return;
+        }
+        // Her şey yolunda → censored player
+        navigate(`/player/${id}?mode=censored`);
+        return;
+      }
+
+      // Diğer 4xx → profile yönlendir
+      if (r.status < 500) {
+        toast.warning("Sansürlü izleme şu an hazırlanamıyor. Tercihlerinizi kontrol edin.");
+        navigate("/profile");
+        return;
+      }
+
+      // 5xx veya ağ sorunu → orijinale düşmek istersen burayı aç
+      // navigate(`/player/${id}?mode=original`);
+    } catch {
+      toast.error("Bağlantı sorunu oluştu. Lütfen tekrar deneyin.");
+      // İsteğe göre fallback:
+      // navigate(`/player/${id}?mode=original`);
+    }
   };
 
   if (loading) {
@@ -67,39 +176,43 @@ export default function Index() {
     );
   }
 
+  const hero = items[heroIdx];
+  const heroImage = hero?.hero || hero?.poster || "/hero-banner.jpg";
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
 
-      {/* Hero Section */}
+      {/* Hero Section — yatay görsel hero_url'den gelir, yoksa poster, yoksa placeholder */}
       <section className="relative h-[70svh] md:h-[90vh] mb-6 md:mb-8">
         <div
-          className="absolute inset-0 bg-cover bg-center"
-          style={{ backgroundImage: "url('/hero-banner.jpg')" }}
+          className="absolute inset-0 bg-cover bg-center transition-[background-image] duration-700 ease-out"
+          style={{ backgroundImage: `url('${heroImage}')` }}
         />
         <div className="absolute inset-0 bg-gradient-to-r from-background via-background/60 to-transparent" />
         <div className="relative container mx-auto h-full flex items-center px-4 md:px-8">
           <div className="max-w-2xl space-y-6 animate-fade-in">
-            <h1 className="text-3xl sm:text-4xl md:text-6xl font-bold leading-tight">The Reckoning</h1>
+            <h1 className="text-3xl sm:text-4xl md:text-6xl font-bold leading-tight">
+              {hero?.title ?? "Untitled"}
+            </h1>
             <p className="text-base sm:text-lg md:text-xl text-muted-foreground">
-              When darkness falls, only the brave survive. Watch with personalized content filtering.
+              Watch your uploads with personalized content filtering.
             </p>
 
             <div className="flex flex-wrap gap-3">
               <Button
                 size="lg"
-                onClick={() => handleWatch()}
-                className= {`${
+                onClick={() => handleWatch(hero?.id)}
+                className={`${
                   enabled
                     ? "bg-green-400 hover:bg-green-300 text-black font-medium shadow-md shadow-green-900/20 transition-all"
-    : "bg-primary hover:bg-primary/90 text-primary-foreground"
-                 } w-full sm:w-auto` }
+                    : "bg-primary hover:bg-primary/90 text-primary-foreground"
+                } w-full sm:w-auto`}
               >
                 <Play className="w-5 h-5 mr-2" />
                 {enabled ? "Watch with Filters" : "Watch Now"}
               </Button>
 
-              {/* İsteğe bağlı ekstra yönlendirme */}
               <Button asChild variant="outline" className="w-full sm:w-auto rounded-full border-white/20 text-white/90 hover:bg-white/10">
                 <Link to="/profile">
                   <SlidersHorizontal className="w-4 h-4 mr-2" />
@@ -108,7 +221,8 @@ export default function Index() {
               </Button>
             </div>
 
-           <div className="flex gap-2 flex-wrap pt-1">
+            {/* Uyarı rozetleri — backend'e bağlanırsa doldururuz */}
+            <div className="flex gap-2 flex-wrap pt-1">
               <span className="px-3 py-1 rounded-full text-sm bg-violence/20 text-violence border border-violence/30">
                 Contains Violence
               </span>
@@ -118,6 +232,19 @@ export default function Index() {
             </div>
           </div>
         </div>
+
+        {items.length > 1 && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-2">
+            {items.slice(0, Math.min(items.length, 6)).map((_, i) => (
+              <button
+                key={i}
+                onClick={() => setHeroIdx(i)}
+                className={`h-2 w-2 rounded-full ${i === heroIdx ? "bg-white" : "bg-white/40"} hover:bg-white transition`}
+                aria-label={`Go to item ${i + 1}`}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       {/* Content Rows */}

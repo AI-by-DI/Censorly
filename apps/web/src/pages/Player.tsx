@@ -1,5 +1,5 @@
 // src/pages/Player.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   Play, Pause, Volume2, VolumeX, Maximize, SkipForward,
@@ -23,29 +23,67 @@ function withAuth(url: string): string {
   return t ? url + (url.includes("?") ? "&" : "?") + `access_token=${encodeURIComponent(t)}` : url;
 }
 
+// --- URL helpers ---
+const isPlayableUrl = (u: unknown): u is string =>
+  typeof u === "string" && (/^https?:\/\//i.test(u) || u.startsWith("/"));
+
+function pickRedactedUrlFromJson(j: any): string | undefined {
+  if (isPlayableUrl(j?.redacted?.url)) return String(j.redacted.url);
+  if (isPlayableUrl(j?.stream_url))    return String(j.stream_url);
+  if (isPlayableUrl(j?.url))           return String(j.url);
+  if (isPlayableUrl(j?.downloadUrl))   return String(j.downloadUrl);
+  if (isPlayableUrl(j?.storage_key))   return String(j.storage_key);
+  return undefined;
+}
+
 // --- API ---
-function pickRedactedUrlFromJson(j: any): string | undefined { return j?.redacted?.url as string | undefined; }
 async function fetchOriginalUrl(id: string, headers: HeadersInit) {
   const r = await fetch(withAuth(`${API_BASE}/videos/${id}/stream`), { headers });
   if (!r.ok) throw new Error(`stream failed: ${r.status}`);
-  const { url } = await r.json();
-  if (!url) throw new Error("no stream url");
+  const data = await r.json();
+  const url = data?.url;
+  if (!isPlayableUrl(url)) throw new Error("no stream url");
   return url as string;
 }
+
+/**
+ * Sansürlü akış istenir. Eğer backend “no filters” (veya sansüre gerek yok) dönerse
+ * özel bir hata fırlatırız: Error("no_filters").
+ */
 async function pollRedactedUrl(id: string, headers: HeadersInit, timeoutMs = 60_000) {
   const started = Date.now(); let attempt = 0;
   while (true) {
-    const r = await fetch(withAuth(`${API_BASE}/redactions/download/${id}?profile_id=active&presigned=true`), { headers });
+    const r = await fetch(
+      withAuth(`${API_BASE}/redactions/download/${id}?profile_id=active&presigned=true`),
+      { headers }
+    );
     if (r.status === 401) throw new Error("unauthorized");
+
     if (r.ok) {
       const j = await r.json().catch(() => ({}));
+
+      // backend açıkça işaret ettiyse
+      if (j?.no_filters === true || j?.reason === "no_filters" || j?.redacted?.reason === "no_filters") {
+        throw new Error("no_filters");
+      }
+
       const u = pickRedactedUrlFromJson(j);
       if (u) return u;
-    } else if (r.status !== 404 && r.status < 500) {
+
+      // 200 ama redacted url yoksa; çoğu backend bunu “sansüre gerek yok” olarak verir
+      throw new Error("no_filters");
+    }
+
+    // 204 de “sansüre gerek yok” olarak kabul
+    if (r.status === 204) throw new Error("no_filters");
+
+    if (r.status !== 404 && r.status < 500) {
       throw new Error(`unexpected_status_${r.status}`);
     }
     if (Date.now() - started > timeoutMs) throw new Error("redaction timeout");
-    attempt++; await new Promise(res => setTimeout(res, Math.min(3000, 500 + attempt * 300)));
+
+    attempt++;
+    await new Promise(res => setTimeout(res, Math.min(3000, 500 + attempt * 300)));
   }
 }
 
@@ -88,6 +126,10 @@ export default function Player() {
   const [wasPlayingBeforeDrag, setWasPlayingBeforeDrag] = useState(false);
   const [bufferedSec, setBufferedSec] = useState(0);
 
+  // ---- AUTO-HIDE CHROME
+  const [showChrome, setShowChrome] = useState(true);
+  const hideTimerRef = useRef<number | null>(null);
+
   const headers = getAuthHeaders();
 
   // auth check
@@ -98,14 +140,18 @@ export default function Player() {
     }
   }, [censorMode]);
 
-  // load url
+  // load url (+ no-filters guard)
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         setLoading(true);
         toast.info(censorMode ? "Preparing filtered stream…" : "Loading original…");
-        const url = censorMode ? await pollRedactedUrl(id, headers) : await fetchOriginalUrl(id, headers);
+
+        const url = censorMode
+          ? await pollRedactedUrl(id, headers)
+          : await fetchOriginalUrl(id, headers);
+
         if (!cancelled) {
           setVideoUrl(url);
           setLoading(false);
@@ -113,20 +159,30 @@ export default function Player() {
         }
       } catch (e: any) {
         console.error(e);
-        if (!cancelled) {
-          setLoading(false);
-          toast.error(
-            e?.message === "unauthorized" ? "401 Unauthorized — please sign in." :
-            e?.message === "redaction timeout" ? "Filtered stream could not be prepared (timeout)." :
-            "Could not load video"
-          );
+        if (cancelled) return;
+
+        setLoading(false);
+
+        if (e?.message === "no_filters") {
+          // İSTENEN DAVRANIŞ: uyar, player'a girme → geri dön
+          toast.warning("Sansürlü izleme için önce tercihlerinizi oluşturmanız gerekiyor.");
+          if (history.length > 1) window.history.back();
+          else window.location.href = "/";
+          return;
         }
+
+        toast.error(
+          e?.message === "unauthorized" ? "401 Unauthorized — please sign in." :
+          e?.message === "redaction timeout" ? "Filtered stream could not be prepared (timeout)." :
+          "Could not load video"
+        );
+        setVideoUrl("");
       }
     })();
     return () => { cancelled = true; };
   }, [id, censorMode]);
 
-  // duration & time tracking (robust)
+  // duration & time tracking
   useEffect(() => {
     const v = videoRef.current; if (!v) return;
     v.volume = volume; v.muted = muted;
@@ -140,7 +196,6 @@ export default function Player() {
 
     const updateDuration = () => {
       let d = v.duration;
-      // fallbacks when duration is not yet known or 0
       if (!isFinite(d) || !d) {
         try { if (v.seekable?.length) d = v.seekable.end(v.seekable.length - 1); } catch {}
       }
@@ -163,6 +218,13 @@ export default function Player() {
     const onEnded = () => {
       if (censorMode) setShowFeedbackCard(true);
       setIsPlaying(false);
+      setShowChrome(true);
+      clearHideTimer();
+    };
+    const onError = () => {
+      const err: any = (v as any).error;
+      console.error("Video element error:", err);
+      toast.error("Video file failed to load.");
     };
 
     v.addEventListener("timeupdate", onTime);
@@ -171,8 +233,8 @@ export default function Player() {
     v.addEventListener("canplay", onCanPlay);
     v.addEventListener("progress", onProgress);
     v.addEventListener("ended", onEnded);
+    v.addEventListener("error", onError);
 
-    // ilk deneme
     updateDuration();
 
     return () => {
@@ -182,10 +244,71 @@ export default function Player() {
       v.removeEventListener("canplay", onCanPlay);
       v.removeEventListener("progress", onProgress);
       v.removeEventListener("ended", onEnded);
+      v.removeEventListener("error", onError);
     };
   }, [volume, muted, censorMode, durationSec]);
 
   const playedPct = durationSec ? Math.min(100, (currentTimeMs / 1000 / durationSec) * 100) : 0;
+
+  // ---- AUTO-HIDE helpers
+  const clearHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleHide = useCallback(() => {
+    clearHideTimer();
+    const v = videoRef.current;
+    const shouldKeepVisible = scrubbing || !v || v.paused;
+    if (shouldKeepVisible) return;
+    hideTimerRef.current = window.setTimeout(() => {
+      setShowChrome(false);
+    }, 2000) as unknown as number;
+  }, [scrubbing, clearHideTimer]);
+
+  const bumpActivity = useCallback(() => {
+    setShowChrome(true);
+    scheduleHide();
+  }, [scheduleHide]);
+
+  // global activity listeners
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root) return;
+
+    const onMove = () => bumpActivity();
+    const onKey = (e: KeyboardEvent) => {
+      const keys = [" ", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "f", "F"];
+      if (keys.includes(e.key)) bumpActivity();
+    };
+    const onClick = () => bumpActivity();
+    const onTouch = () => bumpActivity();
+
+    root.addEventListener("mousemove", onMove);
+    root.addEventListener("pointermove", onMove);
+    root.addEventListener("click", onClick);
+    root.addEventListener("touchstart", onTouch, { passive: true });
+    window.addEventListener("keydown", onKey);
+
+    scheduleHide();
+
+    return () => {
+      root.removeEventListener("mousemove", onMove);
+      root.removeEventListener("pointermove", onMove);
+      root.removeEventListener("click", onClick);
+      root.removeEventListener("touchstart", onTouch);
+      window.removeEventListener("keydown", onKey);
+      clearHideTimer();
+    };
+  }, [bumpActivity, scheduleHide, clearHideTimer]);
+
+  const onPlayClick = () => {
+    const v = videoRef.current; if (!v) return;
+    if (v.paused) v.play();
+    else v.pause();
+  };
 
   // skip/blur demo
   const handleAction = (action: "skip" | "blur" | "continue") => {
@@ -208,7 +331,7 @@ export default function Player() {
     try {
       await fetch(withAuth(`${API_BASE}/feedback/manual`), {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...headers },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ video_id: id, text: feedback }),
       });
       toast.success("Feedback submitted. Thank you!");
@@ -229,7 +352,7 @@ export default function Player() {
     }
   };
 
-  // --- SCRUB HELPERS (window listeners + pointer/mouse/touch) ---
+  // --- SCRUB HELPERS
   const seekAtClientX = (clientX: number) => {
     const v = videoRef.current, bar = barRef.current;
     if (!v || !bar || !durationSec) return;
@@ -244,7 +367,9 @@ export default function Player() {
     const v = videoRef.current;
     if (v) { setWasPlayingBeforeDrag(!v.paused); v.pause(); }
     setScrubbing(true);
+    setShowChrome(true);
     seekAtClientX(clientX);
+    clearHideTimer();
 
     const onMovePointer = (ev: PointerEvent) => { ev.preventDefault(); seekAtClientX(ev.clientX); };
     const onUpPointer = () => {
@@ -252,12 +377,12 @@ export default function Player() {
       window.removeEventListener("pointermove", onMovePointer);
       window.removeEventListener("pointerup", onUpPointer);
       const vv = videoRef.current;
-      if (vv && wasPlayingBeforeDrag) vv.play().catch(() => {});
+      if (vv && wasPlayingBeforeDrag) vv.play().then(() => scheduleHide()).catch(() => {});
+      else setShowChrome(true);
     };
     window.addEventListener("pointermove", onMovePointer, { passive: false });
     window.addEventListener("pointerup", onUpPointer, { once: true });
 
-    // mouse fallback
     const onMouseMove = (ev: MouseEvent) => { ev.preventDefault(); seekAtClientX(ev.clientX); };
     const onMouseUp = () => {
       window.removeEventListener("mousemove", onMouseMove);
@@ -266,7 +391,6 @@ export default function Player() {
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp, { once: true });
 
-    // touch fallback
     const onTouchMove = (ev: TouchEvent) => {
       if (ev.touches?.length) { ev.preventDefault(); seekAtClientX(ev.touches[0].clientX); }
     };
@@ -312,10 +436,18 @@ export default function Player() {
   }
 
   return (
-    <div ref={containerRef} className="h-[100svh] w-full bg-black overflow-hidden relative">
-
+    <div
+      ref={containerRef}
+      className={`h-[100svh] w-full bg-black overflow-hidden relative ${(!showChrome && isPlaying) ? "cursor-none" : ""}`}
+      onMouseMove={() => bumpActivity()}
+      onClick={() => bumpActivity()}
+      onTouchStart={() => bumpActivity()}
+    >
       {/* Back */}
-      <div className="absolute top-4 left-4 z-40">
+      <div
+        className={`absolute top-4 left-4 z-40 transition-all duration-300
+          ${showChrome ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2 pointer-events-none"}`}
+      >
         <button
           onClick={() => (history.length > 1 ? window.history.back() : (window.location.href = "/"))}
           className="px-3 py-2 rounded-xl backdrop-blur bg-white/10 hover:bg-white/15 text-white/90 border border-white/10 shadow-sm transition-colors"
@@ -343,16 +475,29 @@ export default function Player() {
           if (d) setDurationSec(d);
         }}
         controlsList="nodownload noplaybackrate nofullscreen"
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
+        onPlay={() => {
+          setIsPlaying(true);
+          scheduleHide();
+        }}
+        onPause={() => {
+          setIsPlaying(false);
+          setShowChrome(true);
+          clearHideTimer();
+        }}
         onClick={() => {
           const v = videoRef.current; if (!v) return;
           v.paused ? v.play() : v.pause();
         }}
+        onError={() => {
+          toast.error("Video file failed to load.");
+        }}
       />
 
       {/* timeline */}
-      <div className="absolute bottom-24 md:bottom-24 left-4 right-4 md:left-8 md:right-8 z-40 select-none safe-bottom">
+      <div
+        className={`absolute bottom-24 md:bottom-24 left-4 right-4 md:left-8 md:right-8 z-40 select-none safe-bottom
+          transition-all duration-300 ${showChrome ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6 pointer-events-none"}`}
+      >
         <div
           ref={barRef}
           role="slider"
@@ -361,11 +506,9 @@ export default function Player() {
           aria-valuenow={Math.floor(currentTimeMs / 1000)}
           className={`relative h-2 md:h-3 rounded-full overflow-hidden cursor-pointer ${scrubbing ? "ring-2 ring-white/20" : ""}`}
           style={{ backgroundColor: "rgba(255,255,255,0.10)", touchAction: "none" as any }}
-          // start scrub (pointer/mouse/touch)
           onPointerDown={(e) => startScrub(e.clientX)}
           onMouseDown={(e) => startScrub(e.clientX)}
           onTouchStart={(e) => { if (e.touches?.length) startScrub(e.touches[0].clientX); }}
-          // single click seek without pausing
           onClick={(e) => {
             if (scrubbing) return;
             const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
@@ -404,16 +547,16 @@ export default function Player() {
       </div>
 
       {/* controls */}
-      <div className="absolute bottom-4 md:bottom-8 left-4 right-4 md:left-8 md:right-8 z-30">
-       <div className="flex items-center justify-between">
+      <div
+        className={`absolute bottom-4 md:bottom-8 left-4 right-4 md:left-8 md:right-8 z-30
+          transition-all duration-300 ${showChrome ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6 pointer-events-none"}`}
+      >
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Button
               size="icon"
               variant="ghost"
-              onClick={() => {
-                const v = videoRef.current; if (!v) return;
-                v.paused ? v.play() : v.pause();
-              }}
+              onClick={onPlayClick}
               className="w-12 h-12 md:w-12 md:h-12"
             >
               {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6" />}
@@ -428,6 +571,7 @@ export default function Player() {
                   const vol = (val?.[0] ?? 70) / 100;
                   setVolume(vol);
                   if (v) { v.volume = vol; if (vol > 0 && v.muted) v.muted = false; }
+                  bumpActivity();
                 }}
                 max={100}
                 className="w-28"
@@ -439,6 +583,7 @@ export default function Player() {
                   const v = videoRef.current; if (!v) return;
                   const newMuted = !(muted || v.muted);
                   setMuted(newMuted); v.muted = newMuted;
+                  bumpActivity();
                 }}
               >
                 {muted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}

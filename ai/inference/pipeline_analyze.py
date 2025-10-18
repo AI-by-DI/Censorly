@@ -23,7 +23,9 @@ def ensure_dirs():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def download_from_minio(bucket: str, key: str, local_path: str, endpoint: str, access: str, secret: str, secure: bool):
-    client = Minio(endpoint, access_key=access, secret_key=secret, secure=secure)
+    # MinIO client endpoint'i şemasız ister (http/https belirtme), güvenliğini secure flag belirler
+    ep = (endpoint or "").replace("http://", "").replace("https://", "")
+    client = Minio(ep, access_key=access, secret_key=secret, secure=secure)
     client.fget_object(bucket, key, local_path)
 
 def build_detectors(conf: float, iou: float, imgsz: int = 640):
@@ -65,13 +67,55 @@ def canonicalize_label(detector_label: str, sub_label: Optional[str]) -> tuple[s
     """
     Döner: (canonical_label, raw_label)
     - canonical_label: API'nin kabul ettiği 5 etiketten biri
-    - raw_label: modelin ürettiği gerçek alt etiket (None olabilir)
+    - raw_label: modelin ürettiği gerçek alt etiket (None olabilir) — örn. clown/spider/snake
     """
     raw = sub_label or detector_label
     canon = raw if raw in ALLOWED_LABELS else detector_label
     if canon not in ALLOWED_LABELS:
         canon = detector_label
     return canon, raw
+
+# -------- alt-sınıf bazlı minimum skor eşiği yardımcıları --------
+def parse_min_conf_map(s: Optional[str]) -> Dict[str, float]:
+    """
+    Biçim örn:
+      "phobic=0.10,phobic/clown=0.55,phobic/spider=0.25,phobic/snake=0.20,blood=0.15"
+    Anahtarlar:
+      "<label>"            → tüm etiket (örn: "phobic")
+      "<label>/<sublabel>" → alt etiket (örn: "phobic/clown")
+    """
+    out: Dict[str, float] = {}
+    if not s:
+        return out
+    for part in s.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        out[k.strip().lower()] = float(v.strip())
+    return out
+
+def resolve_min_conf(min_map: Dict[str, float],
+                     label: str,
+                     raw_label: Optional[str],
+                     fallback: float) -> float:
+    """
+    Öncelik: label/raw > label > fallback
+    label ve raw küçük harfe indirgenerek aranır.
+    """
+    lbl = (label or "").lower()
+    raw = (raw_label or "").lower() if raw_label else None
+    if raw:
+        key = f"{lbl}/{raw}"
+        if key in min_map:
+            return min_map[key]
+    if lbl in min_map:
+        return min_map[lbl]
+    return fallback
+
+# ---------------------------------------------------------------
 
 def post_json(url: str, payload: Dict[str, Any], token: Optional[str] = None):
     headers = {"Content-Type": "application/json"}
@@ -91,12 +135,13 @@ def run(
     local_path: Optional[str] = None, source_url: Optional[str] = None,
     post_url: Optional[str] = None, job_id: Optional[str] = None, service_token: Optional[str] = None,
     out_jsonl_path: Optional[str] = None, generate_thresholds: bool = False,
-    batch_size: int = 200
+    batch_size: int = 200,
+    min_conf_map_str: Optional[str] = None,   # ← EKLENDİ
 ):
     """
     - input seçim sırası: local_path > source_url > MinIO(download)
     - eğer post_url + job_id verilmişse: start -> ingest(batch) -> finish akışı yapılır
-    - out_jsonl_path verilirse JSONL de yazılır
+    - out_jsonl_path verilirse JSONL de yazılır (filtrelenmiş)
     """
     ensure_dirs()
     run_id = uuid.uuid4().hex[:8]
@@ -117,17 +162,22 @@ def run(
     # 2) Detektörleri yükle
     detectors = build_detectors(conf=conf, iou=iou)
 
+    # 2.5) Alt-etiket bazlı minimum skor haritası (Arg > ENV)
+    if min_conf_map_str is None:
+        min_conf_map_str = os.getenv("MIN_CONF_MAP")
+    min_conf_map = parse_min_conf_map(min_conf_map_str)
+
+    # Dedektör taban fallback’ları (build_detectors ile hizalı)
+    _fallback_per_label = {"violence": 0.4, "blood": 0.15, "alcohol": 0.25, "phobic": 0.10,"obscene": 0.30,}
+
     # 3) Opsiyonel JSONL dosyası
-    jsonl_fp = None
     if out_jsonl_path:
         out_path = pathlib.Path(out_jsonl_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        jsonl_fp = open(out_path, "w", encoding="utf-8")
-        print(f"[i] Writing detections to: {out_path}")
     else:
         out_path = OUT_DIR / f"inference_{run_id}.jsonl"
-        jsonl_fp = open(out_path, "w", encoding="utf-8")
-        print(f"[i] Writing detections to: {out_path}")
+    jsonl_fp = open(out_path, "w", encoding="utf-8")
+    print(f"[i] Writing detections to: {out_path}")
 
     # 4) API varsa START’ı bildir
     if post_url and job_id:
@@ -138,27 +188,40 @@ def run(
             print(f"[warn] job start bildirimi başarısız: {e}")
 
     n_frames = 0
-    n_dets = 0
+    n_dets_total = 0
     buffer: List[Dict[str, Any]] = []
 
     try:
         for ts_ms, frame in iter_frames_with_timestamps(input_path, stride_ms=stride_ms):
             frame_events: List[Dict[str, Any]] = []
+
             for det in detectors:
                 preds = det.infer_one(frame)
                 for p in preds:
                     canon_label, raw_label = canonicalize_label(det.label, p.get("sub_label"))
+                    score = float(p["score"])
+
+                    # Alt-etiket bazlı minimum eşik (yoksa label düzeyi, yoksa fallback)
+                    min_needed = resolve_min_conf(
+                        min_conf_map,
+                        canon_label,
+                        p.get("sub_label"),
+                        fallback=_fallback_per_label.get(canon_label, conf)
+                    )
+                    if score < min_needed:
+                        continue  # bu tahmini tamamen at
+
                     entry = {
                         "ts_ms": ts_ms,
                         "label": canon_label,            # sadece 5 etiketten biri
-                        "score": p["score"],
+                        "score": score,
                         "bbox":  p["bbox"],
                         "track_id": p.get("track_id"),
-                        "extra": {"raw_label": raw_label}  # ham alt etiketi kaybetme
+                        "extra": {"raw_label": raw_label}  # ham alt etiketi sakla
                     }
                     frame_events.append(entry)
 
-            # JSONL’e yaz (ham çıktı istersek kalsın)
+            # JSONL’e **filtrelenmişleri** yaz
             for e in frame_events:
                 jsonl_fp.write(json.dumps(e, ensure_ascii=False) + "\n")
 
@@ -179,7 +242,7 @@ def run(
                     print(f"[warn] ingest batch gönderilemedi: {e}")
 
             n_frames += 1
-            n_dets   += len(frame_events)
+            n_dets_total += len(frame_events)
 
         # kalanları bas
         if post_url and job_id and buffer:
@@ -200,7 +263,7 @@ def run(
             except Exception as e:
                 print(f"[warn] job finish bildirimi başarısız: {e}")
 
-        print(f"[✓] Done. frames={n_frames}, detections={n_dets}")
+        print(f"[✓] Done. frames={n_frames}, detections_kept={n_dets_total}")
         print(f"[→] Preview: tail -n 5 {out_path}")
 
     except Exception as e:
@@ -215,6 +278,13 @@ def run(
         if jsonl_fp:
             jsonl_fp.close()
 
+def _get_env(name, *alts, default=None):
+    for k in (name,) + alts:
+        v = os.getenv(k)
+        if v:
+            return v
+    return default
+
 if __name__ == "__main__":
     BASE_DIR = pathlib.Path(__file__).resolve().parents[2]
     ENV_PATH = BASE_DIR / "configs" / "ai.env.sample"
@@ -222,7 +292,7 @@ if __name__ == "__main__":
         load_dotenv(dotenv_path=ENV_PATH)
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--minio-bucket", type=str, default=os.getenv("MINIO_BUCKET"))
+    ap.add_argument("--minio-bucket", type=str, default=_get_env("S3_BUCKET", "MINIO_BUCKET"))
     ap.add_argument("--video-key", type=str, default=os.getenv("VIDEO_STORAGE_KEY"))
     ap.add_argument("--stride-ms", type=int, default=int(os.getenv("FRAME_STRIDE_MS", "200")))
     ap.add_argument("--conf", type=float, default=float(os.getenv("CONF_THRESHOLD", "0.5")))
@@ -237,12 +307,16 @@ if __name__ == "__main__":
     ap.add_argument("--out-jsonl-path", type=str, default=None)
     ap.add_argument("--generate-thresholds", action="store_true")
 
+    # alt-sınıf eşik haritası (ENV override edilebilir)
+    ap.add_argument("--min-conf-map", type=str, default=os.getenv("MIN_CONF_MAP"))
+
     args = ap.parse_args()
 
-    ENDPOINT = os.getenv("MINIO_ENDPOINT")
-    ACCESS   = os.getenv("MINIO_ACCESS_KEY")
-    SECRET   = os.getenv("MINIO_SECRET_KEY")
-    SECURE   = os.getenv("MINIO_SECURE", "false").lower() == "true"
+    # S3_* öncelikli, yoksa MINIO_* fallback
+    ENDPOINT = _get_env("S3_ENDPOINT", "MINIO_ENDPOINT", default="minio:9000")
+    ACCESS   = _get_env("S3_ACCESS_KEY", "MINIO_ACCESS_KEY")
+    SECRET   = _get_env("S3_SECRET_KEY", "MINIO_SECRET_KEY")
+    SECURE   = (_get_env("S3_USE_SSL", "MINIO_SECURE", default="false") or "false").lower() == "true"
 
     run(
         args.minio_bucket, args.video_key, args.stride_ms, args.conf, args.iou,
@@ -250,4 +324,5 @@ if __name__ == "__main__":
         local_path=args.local_path, source_url=args.source_url,
         post_url=args.post_url, job_id=args.job_id, service_token=args.service_token,
         out_jsonl_path=args.out_jsonl_path, generate_thresholds=args.generate_thresholds,
+        min_conf_map_str=args.min_conf_map,
     )

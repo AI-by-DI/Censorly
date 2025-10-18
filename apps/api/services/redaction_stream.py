@@ -27,17 +27,17 @@ CATEGORY_LABELS: Dict[str, List[str]] = {
     "blood":    ["blood"],
     "violence": ["violence"],
     "phobic":   ["Clown", "Spider", "Snake"],   # fallback
-    "obscene":  ["nudenet"],
-    "nudity":   ["nudenet"],
+    "obscene":  ["obscene"],
+    "nudity":   ["obscene"],
 }
 
 BASE_LABEL_THRESHOLDS: Dict[str, float] = {
-    "violence": 0.35,
-    "nudenet":  0.45,
+    "violence": 0.30,
+    "obscene":  0.15,
     "Clown":    0.10,
-    "Spider":   0.20,
-    "Snake":    0.20,
-    "blood":    0.16,
+    "Spider":   0.10,
+    "Snake":    0.10,
+    "blood":    0.15,
     "alcohol":  0.25,
     "phobic":   0.10,
     "default":  0.30,
