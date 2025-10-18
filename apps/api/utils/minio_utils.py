@@ -1,3 +1,9 @@
+# apps/api/utils/minio_utils.py
+# -----------------------------------------------------------
+# Backward-compatibility helper.
+# Eski kodun beklediği isimleri (fput_local_to_minio, MINIO_DEFAULT_BUCKET vs.)
+# yeni storage katmanına köprüler.
+# -----------------------------------------------------------
 from __future__ import annotations
 import os
 import tempfile
@@ -5,38 +11,32 @@ import mimetypes
 from typing import Tuple, Optional, Dict, Union
 from urllib.parse import urlparse, urlsplit, urlunsplit
 from datetime import timedelta, datetime
+
 from minio import Minio
 
-# ---- ENV ----
-MINIO_ENDPOINT         = os.getenv("MINIO_ENDPOINT", "minio:9000")
-MINIO_ACCESS_KEY       = os.getenv("MINIO_ACCESS_KEY", "minio")
-MINIO_SECRET_KEY       = os.getenv("MINIO_SECRET_KEY", "minio12345")
-MINIO_SECURE           = str(os.getenv("MINIO_SECURE", "false")).lower() == "true"
-MINIO_DEFAULT_BUCKET   = os.getenv("MINIO_DEFAULT_BUCKET", "videos")
-# Dışarı servis ederken kullanılacak public host (örn: http://localhost:9000)
-MINIO_PUBLIC_ENDPOINT  = os.getenv("MINIO_PUBLIC_ENDPOINT", "http://localhost:9000")
-MINIO_REGION           = os.getenv("MINIO_REGION", "us-east-1")
+# Yeni storage katmanından modern fonksiyonlar:
+from apps.api.storage import (
+    build_minio,           # iç minio client
+    build_public_minio,    # public host ile presign client
+    ensure_bucket,
+    put_file,              # yeni isim (eski: fput_local_to_minio)
+    presigned_get,
+    MINIO_DEFAULT_BUCKET as _DEFAULT_BUCKET_FROM_STORAGE,
+)
 
-# ---- Client ----
+# Eski kodların okuduğu isim: MINIO_DEFAULT_BUCKET
+MINIO_DEFAULT_BUCKET = _DEFAULT_BUCKET_FROM_STORAGE
+
+# ---- Client (eski API'yi kullanan bazı yardımcılar için) ----
 def get_minio() -> Minio:
-    return Minio(
-        MINIO_ENDPOINT,
-        access_key=MINIO_ACCESS_KEY,
-        secret_key=MINIO_SECRET_KEY,
-        secure=MINIO_SECURE,
-        region=MINIO_REGION,
-    )
+    return build_minio()
 
 def _client_for(endpoint: str, access_key: str, secret_key: str, secure: bool) -> Minio:
-    return Minio(
-        endpoint,
-        access_key=access_key,
-        secret_key=secret_key,
-        secure=secure,
-        region=MINIO_REGION,
-    )
+    # Bu helper artık gerekli değil; presign için build_public_minio kullanılıyor.
+    # Yine de backward adına koruyalım.
+    return Minio(endpoint, access_key=access_key, secret_key=secret_key, secure=secure)
 
-# ---- URL helpers ----
+# ---- URL helpers (eski kodlar kullanıyor) ----
 def is_minio_url(s: str) -> bool:
     return isinstance(s, str) and s.startswith("minio://")
 
@@ -54,38 +54,30 @@ def parse_minio_url(s: str) -> Tuple[str, str]:
 def _rewrite_host(url: str, public_base: str) -> str:
     """
     İmzalanmış URL'yi farklı bir host ile yeniden yazmak istersen kullan.
-    Bu projede presign'ı zaten public endpoint ile ürettiğimiz için gerek kalmıyor.
+    Presign artık public endpoint ile üretildiğinden normalde gerekmez.
     """
     if not public_base:
         return url
     pub = urlsplit(public_base)
-    if not pub.netloc:  # "http://host:port" beklenir
+    if not pub.netloc:
         return url
     u = urlsplit(url)
     scheme = pub.scheme or u.scheme
     netloc = pub.netloc or pub.path or u.netloc
     return urlunsplit((scheme, netloc, u.path, u.query, u.fragment))
 
-# ---- Buckets / Objects ----
-def ensure_bucket(bucket: str) -> None:
-    cli = get_minio()
-    if not cli.bucket_exists(bucket):
-        cli.make_bucket(bucket)
-
-def _guess_content_type(path: str, default: str = "application/octet-stream") -> str:
-    ctype, _ = mimetypes.guess_type(path)
-    return ctype or default
-
+# ---- Buckets / Objects (geri uyumlu isim) ----
 def fput_local_to_minio(
     local_path: str,
     bucket: str,
     object_name: str,
     content_type: Optional[str] = None,
 ) -> None:
-    cli = get_minio()
+    """
+    Eski isim. Yeni storage.put_file üstüne ince bir sarmalayıcı.
+    """
     ensure_bucket(bucket)
-    ct = content_type or _guess_content_type(local_path)
-    cli.fput_object(bucket, object_name, local_path, content_type=ct)
+    put_file(bucket=bucket, object_name=object_name, file_path=local_path, content_type=content_type)
 
 def fget_minio_to_temp(bucket: str, object_name: str, suffix: str = "") -> str:
     cli = get_minio()
@@ -95,32 +87,14 @@ def fget_minio_to_temp(bucket: str, object_name: str, suffix: str = "") -> str:
     cli.fget_object(bucket, object_name, tmp_path)
     return tmp_path
 
-# ---- Presigned ----
-def presigned_get(bucket: str, object_name: str, expires: Union[int, timedelta] = 3600) -> str:
-    """
-    expires: saniye (int) ya da datetime.timedelta
-    Public endpoint verilmişse, presign'ı o host ile üret.
-    """
-    exp_td = timedelta(seconds=expires) if isinstance(expires, int) else expires
+# ---- Presigned (eskisi ile aynı imza) ----
+# presigned_get doğrudan storage.presigned_get'e yönlendiriliyor (yukarıda import edildi)
 
-    if MINIO_PUBLIC_ENDPOINT:
-        u = urlsplit(MINIO_PUBLIC_ENDPOINT)  # örn: http://localhost:9000
-        if u.scheme and u.netloc:
-            cli = _client_for(
-                endpoint=u.netloc,
-                access_key=MINIO_ACCESS_KEY,
-                secret_key=MINIO_SECRET_KEY,
-                secure=(u.scheme == "https"),
-            )
-        else:
-            cli = get_minio()
-        return cli.presigned_get_object(bucket, object_name, expires=exp_td)
+# ---- High-level helpers (redactions.py bunları kullanıyor) ----
+def _guess_content_type(path: str, default: str = "application/octet-stream") -> str:
+    ctype, _ = mimetypes.guess_type(path)
+    return ctype or default
 
-    # public endpoint yoksa iç endpointten üret
-    cli = get_minio()
-    return cli.presigned_get_object(bucket, object_name, expires=exp_td)
-
-# ---- High-level helpers ----
 def resolve_source_to_local(storage_key: str, default_suffix: str = ".mp4") -> Tuple[str, Optional[str]]:
     """
     Kaynağı yerel path'e indirip döndürür.
@@ -159,8 +133,7 @@ def upload_redacted_and_presign(
     # 1) Sadece mevcut objeyi presign et
     if existing_object:
         bucket, object_name = existing_object
-        # object gerçekten var mı kontrol et (yoksa MinIO exception atar)
-        cli.stat_object(bucket, object_name)
+        cli.stat_object(bucket, object_name)  # yoksa exception atar
         url = presigned_get(bucket, object_name, ttl_hours * 3600)
         return {
             "bucket": bucket,
@@ -185,7 +158,7 @@ def upload_redacted_and_presign(
     object_name = f"redacted/{video_id}/{ts}{ext or '.mp4'}"
 
     ct = _guess_content_type(local_path, "video/mp4")
-    cli.fput_object(bucket, object_name, local_path, content_type=ct)
+    fput_local_to_minio(local_path, bucket, object_name, content_type=ct)
 
     url = presigned_get(bucket, object_name, ttl_hours * 3600)
 

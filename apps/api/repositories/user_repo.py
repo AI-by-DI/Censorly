@@ -36,3 +36,13 @@ class UserRepo:
 
     def refresh_exists(self, jti: str) -> bool:
         return bool(self.db.execute(text("SELECT 1 FROM user_refresh_tokens WHERE jti=:j"), {"j": jti}).first())
+
+    # --- password update & revoke all refresh by user ---
+    def update_password_hash(self, user_id: str, password_hash: str):
+        self.db.execute(
+            text("UPDATE users SET password_hash=:p, updated_at=NOW() WHERE id=:u"),
+            {"p": password_hash, "u": user_id},
+        )
+        # güvenlik: tüm refresh token'larını iptal et
+        self.db.execute(text("DELETE FROM user_refresh_tokens WHERE user_id=:u"), {"u": user_id})
+        self.db.commit()

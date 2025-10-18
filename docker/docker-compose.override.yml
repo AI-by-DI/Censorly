@@ -1,0 +1,62 @@
+# docker/docker-compose.override.yml
+# ================================
+# Censorly Prod Override - (optimized for 8 GB RAM host)
+# ================================
+services:
+  minio:
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9101"
+    ports:
+      - "9100:9000" # S3 API (PUBLIC_S3_ENDPOINT= http://<ip>:9100 ile uyumlu)
+      - "9101:9101" # Web Konsol
+  api:
+    # API servisi override ayarları
+    mem_limit: "6g" # toplam RAM'in ~%75'i
+    memswap_limit: "8g" # gerektiğinde swap'ı da kullanabilir
+    shm_size: "1g" # /dev/shm: OpenCV ve ffmpeg için
+    ports:
+      - "8100:8000" # host:container port eşlemesi
+    volumes:
+      - ../runtime/api-tmp:/tmp # geçici dosyalar diske yazılsın
+    environment:
+      # Performans & thread ayarları
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      PYTORCH_NUM_THREADS: "1"
+      OPENCV_OPENCL_RUNTIME: "disabled"
+      TMPDIR: "/tmp"
+      # Ekstra loglama istersen
+      LOG_LEVEL: "info"
+    restart: unless-stopped
+
+  web:
+    ports:
+      - "8101:80" # Web arayüzü dışa açılan port
+    environment:
+      VITE_API_URL: "http://194.146.50.83:8100"
+    restart: unless-stopped
+
+  pgadmin:
+    # PostgreSQL yönetim arayüzü
+    image: dpage/pgadmin4
+    container_name: censorly_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "admin@censorly.com"
+      PGADMIN_DEFAULT_PASSWORD: "admin"
+    ports:
+      - "5050:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+# ================================
+# Notlar:
+# - override dosyası sadece production davranışını genişletir.
+# - Bellek sınırlarını Docker'a bildirir (OOM riskini azaltır).
+# - /tmp diske bağlandığı için büyük videolarda RAM patlaması önlenir.
+# ================================

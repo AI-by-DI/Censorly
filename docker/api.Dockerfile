@@ -12,53 +12,44 @@ ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120
 
-# Python bağımlılıkları
+# Requirements yükle + build-time sanity check
 COPY requirements.txt .
-RUN python -m pip install -r requirements.txt && \
-    python -m pip install alembic==1.14.0
-
-# (Ultralytics yüzünden opencv-python gelirse sök)
-RUN python - <<'PY'
-import subprocess, sys
+RUN python -m pip install --upgrade pip && \
+    python -m pip install --no-cache-dir -r requirements.txt && \
+    python - <<'PY'
+import sys
+import fastapi, uvicorn, numpy
 try:
-    import pkg_resources
-    dists = {d.project_name.lower() for d in pkg_resources.working_set}
-    if 'opencv-python' in dists:
-        subprocess.check_call([sys.executable, '-m', 'pip', 'uninstall', '-y', 'opencv-python'])
-except Exception as e:
-    print("opencv-python uninstall step warn:", e)
-PY
-
-RUN python - <<'PY'
-import importlib.util, subprocess, sys
-spec = importlib.util.find_spec("cv2")
-if spec is None:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "opencv-python-headless==4.8.1.78"])
-else:
     import cv2
-    print("cv2 already present:", cv2.__version__)
+except Exception as e:
+    raise SystemExit(f"OpenCV import failed: {e}")
+
+print("Sanity OK:",
+      "fastapi", fastapi.__version__,
+      "uvicorn", uvicorn.__version__,
+      "numpy", numpy.__version__,
+      "cv2", cv2.__version__)
 PY
 
 # Projeyi kopyala ve PYTHONPATH ayarla
 COPY . .
 ENV PYTHONPATH=/app
 
-# Opsiyonel: başlangıçta migrate etmek için bayrak
-# APPLY_MIGRATIONS=1 yaparsan entrypoint alembic upgrade head çalıştırır
+# Opsiyonel migration bayrağı ve app ayarları
 ENV APPLY_MIGRATIONS=0 \
     APP_MODULE="apps.api.main:app" \
     PORT=8000
 
-# Basit entrypoint
+# Basit entrypoint (sh + python -m uvicorn)
 RUN printf '%s\n' \
-'#!/usr/bin/env bash' \
+'#!/bin/sh' \
 'set -e' \
 'if [ "${APPLY_MIGRATIONS:-0}" = "1" ]; then' \
 '  echo "[entrypoint] Running alembic upgrade head..."' \
 '  alembic upgrade head || { echo "[entrypoint] Alembic failed"; exit 1; }' \
 'fi' \
 'echo "[entrypoint] Starting Uvicorn: ${APP_MODULE} on port ${PORT:-8000}"' \
-'exec uvicorn "${APP_MODULE}" --host 0.0.0.0 --port "${PORT:-8000}"' \
+'exec python -m uvicorn "${APP_MODULE}" --host 0.0.0.0 --port "${PORT:-8000}"' \
 > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 EXPOSE 8000

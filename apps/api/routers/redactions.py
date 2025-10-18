@@ -13,7 +13,7 @@ from apps.api.core.db import get_db
 from data.schema import VideoAsset
 from apps.api.services.redaction_stream import (
     _build_audio_filter_from_intervals, _calc_skip_intervals, _ffprobe_duration, _get_profile, _invert_to_keep, profile_to_dict, _latest_done_job, _jsonl_path_abs,
-    _build_jsonl_from_db, _build_min_score_map, _labels_from_mode_map
+    _build_jsonl_from_db, _build_min_score_map, _labels_from_mode_map, _ensure_canon_labels_jsonl
 )
 
 # 🔗 MinIO utils
@@ -141,6 +141,7 @@ def download_now(
       except Exception as e:
         log.exception("_build_jsonl_from_db failed")
         raise HTTPException(status_code=500, detail=f"jsonl_build_failed: {e}")
+    jsonl_arg = _ensure_canon_labels_jsonl(jsonl_arg)  
 
     # 2.a) HAZIR OBJE VARSA ÖNCE ONU PRESIGN ET VE DÖN
     rb = getattr(job, "redacted_bucket", None)
