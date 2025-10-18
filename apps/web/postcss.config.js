@@ -1,6 +1,7 @@
-module.exports = {
+// ESM format + @tailwindcss/postcss kullanımı
+export default {
   plugins: {
-    tailwindcss: {},
+    "@tailwindcss/postcss": {},
     autoprefixer: {},
   },
-}
+};
