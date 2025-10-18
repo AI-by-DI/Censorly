@@ -3,7 +3,6 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import MovieCard from "./MovieCard";
 import { useEffect, useRef, useState } from "react";
-import React from "react";
 export interface Movie {
   id: string | number;
   title: string;

@@ -8,10 +8,17 @@ dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 // 2) app .env
 dotenv.config();
 
-export default defineConfig(() => ({
-  plugins: [react()],
+export default defineConfig(({ mode }) => ({
+  plugins: [
+    react(),
+    // 💡 Lovable'ın componentTagger eklentisi varsa buraya eklenebilir.
+    // mode === "development" && componentTagger(),
+  ].filter(Boolean),
+
   resolve: {
-    alias: { "@": path.resolve(__dirname, "./src") },
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
   },
   server: {
     host: true,
