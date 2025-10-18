@@ -31,14 +31,14 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   const onLogin = async () => {
-    if (!email.trim() || !pw) return toast.error("E-posta ve parola gerekli");
+    if (!email.trim() || !pw) return toast.error("Email and password are required");
     try {
       setLoading(true);
       await authApi.login(email.trim(), pw);
-      toast.success("Giriş başarılı 🎉");
+      toast.success("Signed in successfully 🎉");
       nav("/index", { replace: true });
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || "Giriş başarısız");
+      toast.error(e?.response?.data?.detail || "Sign-in failed");
     } finally {
       setLoading(false);
     }
@@ -59,14 +59,14 @@ export default function LoginPage() {
 
             <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} className="w-full">
               <TabsList className="grid grid-cols-2 w-full mb-6">
-                <TabsTrigger value="login">Giriş Yap</TabsTrigger>
-                <TabsTrigger value="register">Kayıt Ol</TabsTrigger>
+                <TabsTrigger value="login">Sign In</TabsTrigger>
+                <TabsTrigger value="register">Sign Up</TabsTrigger>
               </TabsList>
 
               <TabsContent value="login">
                 <div className="space-y-4">
                   <div>
-                    <label className="text-sm text-muted-foreground">E-posta</label>
+                    <label className="text-sm text-muted-foreground">Email</label>
                     <Input
                       type="email"
                       placeholder="you@example.com"
@@ -76,7 +76,7 @@ export default function LoginPage() {
                   </div>
 
                   <div>
-                    <label className="text-sm text-muted-foreground">Parola</label>
+                    <label className="text-sm text-muted-foreground">Password</label>
                     <Input
                       type="password"
                       placeholder="••••••••"
@@ -86,22 +86,22 @@ export default function LoginPage() {
                   </div>
 
                   <Button className="w-full mt-2" onClick={onLogin} disabled={loading}>
-                    {loading ? "Giriş yapılıyor..." : "Giriş Yap"}
+                    {loading ? "Signing in..." : "Sign In"}
                   </Button>
 
-                  {/* Şifremi unuttum */}
+                  {/* Forgot password */}
                   <p className="mt-3 text-center text-sm text-white/70">
-                    Parolanı mı unuttun?{" "}
+                    Forgot your password?{" "}
                     <Link to="/forgot-password" className="text-red-400 hover:text-red-300 underline">
-                      Sıfırla
+                      Reset it
                     </Link>
                   </p>
                 </div>
 
                 <p className="mt-4 text-center text-sm text-white/70">
-                  Hesabın yok mu?{" "}
+                  Don’t have an account?{" "}
                   <Link to="/login?tab=register" className="text-red-400 hover:text-red-300 underline">
-                    Kayıt ol
+                    Sign up
                   </Link>
                 </p>
               </TabsContent>
@@ -109,9 +109,9 @@ export default function LoginPage() {
               <TabsContent value="register">
                 <RegisterForm onSuccess={() => setTab("login")} />
                 <p className="mt-4 text-center text-sm text-white/70">
-                  Zaten hesabın var mı?{" "}
+                  Already have an account?{" "}
                   <Link to="/login?tab=login" className="text-red-400 hover:text-red-300 underline">
-                    Giriş yap
+                    Sign in
                   </Link>
                 </p>
               </TabsContent>

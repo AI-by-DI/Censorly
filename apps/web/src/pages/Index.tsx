@@ -7,7 +7,6 @@ import Footer from "../components/Footer";
 import CategoryRow from "../components/CategoryRow";
 import { useNavigate, Link } from "react-router-dom";
 import { useCensorStore } from "../store/censorStore";
-import { toast } from "sonner";
 
 const API_BASE = import.meta.env.VITE_API_BASE as string;
 
@@ -24,22 +23,6 @@ type MovieCardT = {
   poster: string | null;
   hero: string | null;
   warnings: string[];
-};
-
-// küçük yardımcılar
-const getAuthHeaders = (): HeadersInit => {
-  const t = localStorage.getItem("access");
-  return t ? { Authorization: `Bearer ${t}` } : {};
-};
-const isPlayableUrl = (u: unknown): u is string =>
-  typeof u === "string" && (/^https?:\/\//i.test(u) || u.startsWith("/"));
-const pickRedactedUrlFromJson = (j: any): string | undefined => {
-  if (isPlayableUrl(j?.redacted?.url)) return String(j.redacted.url);
-  if (isPlayableUrl(j?.stream_url)) return String(j.stream_url);
-  if (isPlayableUrl(j?.url)) return String(j.url);
-  if (isPlayableUrl(j?.downloadUrl)) return String(j.downloadUrl);
-  if (isPlayableUrl(j?.storage_key)) return String(j.storage_key);
-  return undefined;
 };
 
 export default function Index() {
@@ -79,12 +62,10 @@ export default function Index() {
         if (!canceled) setLoading(false);
       }
     })();
-    return () => {
-      canceled = true;
-    };
+    return () => { canceled = true; };
   }, []);
 
-  // Hero'yu periyodik olarak döndür (12sn)
+  // Hero rotator (12s)
   useEffect(() => {
     if (!items.length) return;
     const timer = setInterval(() => {
@@ -95,7 +76,7 @@ export default function Index() {
 
   const placeholders = useMemo(() => ["/movie-1.jpg", "/movie-2.jpg", "/movie-3.jpg", "/movie-4.jpg"], []);
 
-  // CategoryRow, image bekliyor; poster'ı kullan (yoksa placeholder)
+  // CategoryRow için poster -> image map
   const toRow = (arr: MovieCardT[], start: number, end: number) =>
     arr.slice(start, end).map((m, i) => ({
       id: m.id,
@@ -105,67 +86,14 @@ export default function Index() {
     }));
 
   const recommended = useMemo(() => toRow(items, 0, 6), [items, placeholders]);
-  const trending = useMemo(() => toRow(items, 6, 12), [items, placeholders]);
-  const newlyAdded = useMemo(() => toRow(items, 12, 18), [items, placeholders]);
+  const trending    = useMemo(() => toRow(items, 6, 12), [items, placeholders]);
+  const newlyAdded  = useMemo(() => toRow(items, 12, 18), [items, placeholders]);
 
-  // “Watch” davranışı — filtre açıkken profilde hiç filtre yoksa uyar ve player’a gitme
-  const handleWatch = async (videoId?: string) => {
+  // Sade “Watch” — index’te bekleme yok, direkt player’a
+  const handleWatch = (videoId?: string) => {
     const id = videoId ?? (items[0]?.id || "");
     if (!id) return;
-
-    // Filtre kapalıysa doğrudan orijinal oynatıcı
-    if (!enabled) {
-      navigate(`/player/${id}?mode=original`);
-      return;
-    }
-
-    try {
-      const r = await fetch(
-        `${API_BASE}/redactions/download/${id}?profile_id=active&presigned=true`,
-        { headers: getAuthHeaders() }
-      );
-
-      // Yetkisiz → filtreli izleme kullanılamaz, profile yönelt
-      if (r.status === 401) {
-        toast.error("Filtered Mode için lütfen giriş yapın.");
-        navigate("/profile");
-        return;
-      }
-
-      // 204 => Sansür gerekmez (çoğu servis böyle döner) → profil uyarısı
-      if (r.status === 204) {
-        toast.warning("Sansürlü izleme için önce tercihlerinizi oluşturmanız gerekiyor.");
-        navigate("/profile");
-        return;
-      }
-
-      if (r.ok) {
-        const j = await r.json().catch(() => ({}));
-        // Sunucu “no filters” bayrağı verdiyse veya oynatılabilir URL yoksa
-        if (j?.no_filters === true || j?.reason === "no_filters" || j?.redacted?.reason === "no_filters" || !pickRedactedUrlFromJson(j)) {
-          toast.warning("Sansürlü izleme için önce tercihlerinizi oluşturmanız gerekiyor.");
-          navigate("/profile");
-          return;
-        }
-        // Her şey yolunda → censored player
-        navigate(`/player/${id}?mode=censored`);
-        return;
-      }
-
-      // Diğer 4xx → profile yönlendir
-      if (r.status < 500) {
-        toast.warning("Sansürlü izleme şu an hazırlanamıyor. Tercihlerinizi kontrol edin.");
-        navigate("/profile");
-        return;
-      }
-
-      // 5xx veya ağ sorunu → orijinale düşmek istersen burayı aç
-      // navigate(`/player/${id}?mode=original`);
-    } catch {
-      toast.error("Bağlantı sorunu oluştu. Lütfen tekrar deneyin.");
-      // İsteğe göre fallback:
-      // navigate(`/player/${id}?mode=original`);
-    }
+    navigate(enabled ? `/player/${id}?mode=censored` : `/player/${id}?mode=original`);
   };
 
   if (loading) {
@@ -183,13 +111,13 @@ export default function Index() {
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
 
-      {/* Hero Section — yatay görsel hero_url'den gelir, yoksa poster, yoksa placeholder */}
+      {/* Hero Section — tıklamaları engellememesi için background katmanlarına pointer-events-none */}
       <section className="relative h-[70svh] md:h-[90vh] mb-6 md:mb-8">
         <div
-          className="absolute inset-0 bg-cover bg-center transition-[background-image] duration-700 ease-out"
+          className="absolute inset-0 bg-cover bg-center transition-[background-image] duration-700 ease-out pointer-events-none"
           style={{ backgroundImage: `url('${heroImage}')` }}
         />
-        <div className="absolute inset-0 bg-gradient-to-r from-background via-background/60 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-r from-background via-background/60 to-transparent pointer-events-none" />
         <div className="relative container mx-auto h-full flex items-center px-4 md:px-8">
           <div className="max-w-2xl space-y-6 animate-fade-in">
             <h1 className="text-3xl sm:text-4xl md:text-6xl font-bold leading-tight">
@@ -221,7 +149,7 @@ export default function Index() {
               </Button>
             </div>
 
-            {/* Uyarı rozetleri — backend'e bağlanırsa doldururuz */}
+            {/* (opsiyonel) statik rozetler */}
             <div className="flex gap-2 flex-wrap pt-1">
               <span className="px-3 py-1 rounded-full text-sm bg-violence/20 text-violence border border-violence/30">
                 Contains Violence

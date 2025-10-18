@@ -1,3 +1,4 @@
+// src/components/RegisterForm.tsx
 import { useState, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { authApi } from "../lib/api";
@@ -27,15 +28,15 @@ export default function RegisterForm({
   const [birthYear, setBirthYear] = useState<string | "">("");
   const [loading, setLoading] = useState(false);
 
-  const years = useMemo(
-    () => Array.from({ length: 101 }, (_, i) => 2025 - i).filter((y) => y >= 1925),
-    []
-  );
+  const years = useMemo(() => {
+    const now = new Date().getFullYear();
+    return Array.from({ length: 101 }, (_, i) => now - i).filter((y) => y >= now - 100);
+  }, []);
 
   const validate = useCallback((): string | null => {
-    if (!email.trim()) return "E-posta gerekli";
-    if (!emailRe.test(email.trim())) return "Geçerli bir e-posta girin";
-    if (pw.length < 8) return "Parola en az 8 karakter olmalı";
+    if (!email.trim()) return "Email is required";
+    if (!emailRe.test(email.trim())) return "Enter a valid email address";
+    if (pw.length < 8) return "Password must be at least 8 characters";
     return null;
   }, [email, pw]);
 
@@ -55,21 +56,21 @@ export default function RegisterForm({
         country,
         birthYear ? Number(birthYear) : null
       );
-      toast.success("Kayıt başarılı 🎉 Şimdi giriş yapabilirsiniz.");
+      toast.success("Sign-up successful 🎉 You can sign in now.");
 
-      // 🔁 Üst bileşene haber ver (sekme login'e geçsin)
+      // Tell parent (so the tab switches to login)
       onSuccess?.();
 
-      // 🔒 URL'i de güncelle (yeniden girişte login sekmesiyle gelsin)
+      // And make sure URL opens the login tab if user revisits
       navigate("/login?tab=login", { replace: true });
     } catch (e: any) {
       const d = e?.response?.data;
       toast.error(
         d?.detail === "email_in_use"
-          ? "Bu e-posta zaten kayıtlı"
+          ? "This email is already registered"
           : typeof d?.detail === "string"
           ? d.detail
-          : "Kayıt başarısız"
+          : "Sign-up failed"
       );
     } finally {
       setLoading(false);
@@ -79,7 +80,7 @@ export default function RegisterForm({
   return (
     <div className="space-y-4 animate-fade-in">
       <div>
-        <label className="text-sm text-muted-foreground">E-posta</label>
+        <label className="text-sm text-muted-foreground">Email</label>
         <Input
           type="email"
           placeholder="you@example.com"
@@ -89,20 +90,20 @@ export default function RegisterForm({
       </div>
 
       <div>
-        <label className="text-sm text-muted-foreground">Parola</label>
+        <label className="text-sm text-muted-foreground">Password</label>
         <Input
           type="password"
-          placeholder="En az 8 karakter"
+          placeholder="At least 8 characters"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
         />
       </div>
 
       <div>
-        <label className="text-sm text-muted-foreground">Ülke (opsiyonel)</label>
+        <label className="text-sm text-muted-foreground">Country (optional)</label>
         <Select value={country ?? ""} onValueChange={setCountry}>
           <SelectTrigger>
-            <SelectValue placeholder="Ülke seçiniz" />
+            <SelectValue placeholder="Select a country" />
           </SelectTrigger>
           <SelectContent className="bg-card text-foreground max-h-60 overflow-y-auto">
             {countryOptions.map((c) => (
@@ -118,10 +119,10 @@ export default function RegisterForm({
       </div>
 
       <div>
-        <label className="text-sm text-muted-foreground">Doğum Yılı</label>
+        <label className="text-sm text-muted-foreground">Birth Year</label>
         <Select value={birthYear} onValueChange={setBirthYear}>
           <SelectTrigger>
-            <SelectValue placeholder="Seçiniz" />
+            <SelectValue placeholder="Select" />
           </SelectTrigger>
           <SelectContent className="bg-card text-foreground max-h-60 overflow-y-auto">
             {years.map((y) => (
@@ -134,7 +135,7 @@ export default function RegisterForm({
       </div>
 
       <Button className="w-full mt-2" onClick={submit} disabled={loading}>
-        {loading ? "Kaydediliyor..." : "Kayıt Ol"}
+        {loading ? "Creating account…" : "Sign Up"}
       </Button>
     </div>
   );
