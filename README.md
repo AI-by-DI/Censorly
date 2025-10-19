@@ -1,5 +1,6 @@
 # Censorly — AI‑Powered Visual Content Redaction (API + Demo)
-**AI by DI - İlayda Akyüz, Didar Nur Bilgin**> **TL;DR:** Censorly detects **disturbing visuals** in films/series and **redacts them live** (blur / skip) **based on user preferences**. It is **API‑first**, integrates into existing platforms, and works **without producing permanent video copies**.
+**AI by DI - İlayda Akyüz, Didar Nur Bilgin**
+**TL;DR:** Censorly detects **disturbing visuals** in films/series and **redacts them live** (blur / skip) **based on user preferences**. It is **API‑first**, integrates into existing platforms, and works **without producing permanent video copies**.
 ---
 
 ## 🌐 Live Deployment
