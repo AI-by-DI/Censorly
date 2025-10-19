@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # --- Auth/JWT ---
     JWT_SECRET: str = Field(default="dev-secret-change-me")  # PROD'da mutlaka değiştir
     JWT_ISSUER: str = "censorly"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 45
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
     REFRESH_TOKEN_EXPIRE_DAYS: int = 21
 
     # --- Redis ---

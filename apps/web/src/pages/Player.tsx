@@ -46,10 +46,26 @@ async function fetchOriginalUrl(id: string, headers: HeadersInit) {
   return url as string;
 }
 
-/**
- * Sansürlü akış istenir. Eğer backend “no filters” (veya sansüre gerek yok) dönerse
- * özel bir hata fırlatırız: Error("no_filters").
- */
+/** Quick check if active profile has any blocked categories. */
+async function probeHasBlockedCategories(headers: HeadersInit): Promise<boolean | undefined> {
+  try {
+    const r = await fetch(withAuth(`${API_BASE}/profiles/active`), { headers });
+    if (!r.ok) return undefined;
+    const j = await r.json().catch(() => ({}));
+    const allowFlags = j?.allow_flags || j?.extras?.allow_flags || {};
+    const allowMap   = j?.allow_map   || j?.extras?.allow_map   || {};
+    const keys = ["alcohol", "blood", "violence", "phobic", "obscene"];
+    for (const k of keys) {
+      const flag = (allowMap[k] ?? allowFlags[`allow_${k}`]);
+      if (flag === false) return true; // at least one category is blocked
+    }
+    return false; // none blocked
+  } catch {
+    return undefined; // unknown → fall back to pipeline
+  }
+}
+
+/** Request censored stream; treat 400/204/no_filters as Error("no_filters"). */
 async function pollRedactedUrl(id: string, headers: HeadersInit, timeoutMs = 60_000) {
   const started = Date.now(); let attempt = 0;
   while (true) {
@@ -57,33 +73,31 @@ async function pollRedactedUrl(id: string, headers: HeadersInit, timeoutMs = 60_
       withAuth(`${API_BASE}/redactions/download/${id}?profile_id=active&presigned=true`),
       { headers }
     );
+
     if (r.status === 401) throw new Error("unauthorized");
 
     if (r.ok) {
       const j = await r.json().catch(() => ({}));
-
-      // backend açıkça işaret ettiyse
       if (j?.no_filters === true || j?.reason === "no_filters" || j?.redacted?.reason === "no_filters") {
         throw new Error("no_filters");
       }
-
       const u = pickRedactedUrlFromJson(j);
       if (u) return u;
-
-      // 200 ama redacted url yoksa; çoğu backend bunu “sansüre gerek yok” olarak verir
       throw new Error("no_filters");
     }
 
-    // 204 de “sansüre gerek yok” olarak kabul
-    if (r.status === 204) throw new Error("no_filters");
+    if (r.status === 204 || r.status === 400) throw new Error("no_filters");
 
-    if (r.status !== 404 && r.status < 500) {
-      throw new Error(`unexpected_status_${r.status}`);
+    if (r.status === 404) {
+      if (Date.now() - started > timeoutMs) throw new Error("redaction timeout");
+      attempt++;
+      await new Promise(res => setTimeout(res, Math.min(3000, 500 + attempt * 300)));
+      continue;
     }
-    if (Date.now() - started > timeoutMs) throw new Error("redaction timeout");
 
-    attempt++;
-    await new Promise(res => setTimeout(res, Math.min(3000, 500 + attempt * 300)));
+    if (r.status >= 400 && r.status < 500) throw new Error("no_filters");
+
+    throw new Error(`unexpected_status_${r.status}`);
   }
 }
 
@@ -121,6 +135,9 @@ export default function Player() {
   const [volume, setVolume] = useState(0.7);
   const [muted, setMuted] = useState(false);
 
+  // stop re-trying once we show the "no filters" message
+  const [halted, setHalted] = useState(false);
+
   // SEEK / SCRUB
   const [scrubbing, setScrubbing] = useState(false);
   const [wasPlayingBeforeDrag, setWasPlayingBeforeDrag] = useState(false);
@@ -140,13 +157,27 @@ export default function Player() {
     }
   }, [censorMode]);
 
-  // load url (+ no-filters guard)
+  // load url (+ fast no-filters guard via profile)
   useEffect(() => {
+    if (halted) return;
     let cancelled = false;
     (async () => {
       try {
         setLoading(true);
         toast.info(censorMode ? "Preparing filtered stream…" : "Loading original…");
+
+        if (censorMode) {
+          const probe = await probeHasBlockedCategories(headers);
+          if (probe === false) {
+            if (cancelled) return;
+            toast.warning("Please set your filtering preferences first (disable at least one category).");
+            setVideoUrl("");
+            setLoading(false);
+            setHalted(true);
+            return;
+          }
+          // probe === true → proceed; undefined → fall back to pipeline
+        }
 
         const url = censorMode
           ? await pollRedactedUrl(id, headers)
@@ -158,29 +189,29 @@ export default function Player() {
           toast.success("Video ready!");
         }
       } catch (e: any) {
-        console.error(e);
         if (cancelled) return;
-
         setLoading(false);
 
-        if (e?.message === "no_filters") {
-          // İSTENEN DAVRANIŞ: uyar, player'a girme → geri dön
-          toast.warning("Sansürlü izleme için önce tercihlerinizi oluşturmanız gerekiyor.");
-          if (history.length > 1) window.history.back();
-          else window.location.href = "/";
+        if (
+          e?.message === "no_filters" ||
+          String(e?.message).includes("unexpected_status_400")
+        ) {
+          toast.warning("Please set your filtering preferences first (disable at least one category).");
+          setVideoUrl("");
+          setHalted(true);
           return;
         }
 
         toast.error(
           e?.message === "unauthorized" ? "401 Unauthorized — please sign in." :
           e?.message === "redaction timeout" ? "Filtered stream could not be prepared (timeout)." :
-          "Could not load video"
+          "Could not load video."
         );
         setVideoUrl("");
       }
     })();
     return () => { cancelled = true; };
-  }, [id, censorMode]);
+  }, [id, censorMode, halted]);
 
   // duration & time tracking
   useEffect(() => {
@@ -318,9 +349,9 @@ export default function Player() {
       v.currentTime = Math.min(v.duration || v.currentTime + 2, v.currentTime + 10);
       toast.success("Scene skipped!");
     } else if (action === "blur") {
-      toast.success("Scene blurred (demo)");
+      toast.success("Scene blurred (demo).");
     } else {
-      toast.info("Continuing normally");
+      toast.info("Continuing normally.");
     }
   };
 
@@ -337,7 +368,7 @@ export default function Player() {
       toast.success("Feedback submitted. Thank you!");
       setFeedback(""); setShowFeedbackDialog(false); setShowFeedbackCard(false);
     } catch {
-      toast.error("Failed to send feedback");
+      toast.error("Failed to send feedback.");
     }
   };
 
@@ -348,7 +379,7 @@ export default function Player() {
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     } else {
-      root.requestFullscreen({ navigationUI: "hide" as any }).catch(() => {});
+      (root as any).requestFullscreen?.({ navigationUI: "hide" as any })?.catch?.(() => {});
     }
   };
 
@@ -459,39 +490,57 @@ export default function Player() {
         </button>
       </div>
 
-      {/* video */}
-      <video
-        key={(censorMode ? "c" : "o") + ":" + videoUrl}
-        ref={videoRef}
-        src={videoUrl}
-        crossOrigin="anonymous"
-        className="absolute inset-0 w-full h-full object-contain bg-black"
-        controls={false}
-        playsInline
-        preload="metadata"
-        onLoadedMetadata={(e) => {
-          const v = e.currentTarget;
-          const d = isFinite(v.duration) && v.duration ? v.duration : 0;
-          if (d) setDurationSec(d);
-        }}
-        controlsList="nodownload noplaybackrate nofullscreen"
-        onPlay={() => {
-          setIsPlaying(true);
-          scheduleHide();
-        }}
-        onPause={() => {
-          setIsPlaying(false);
-          setShowChrome(true);
-          clearHideTimer();
-        }}
-        onClick={() => {
-          const v = videoRef.current; if (!v) return;
-          v.paused ? v.play() : v.pause();
-        }}
-        onError={() => {
-          toast.error("Video file failed to load.");
-        }}
-      />
+      {/* EMPTY STATE — show message when no-filters/halted */}
+      {!videoUrl && halted && (
+        <div className="absolute inset-0 flex items-center justify-center px-6">
+          <div className="max-w-md text-center text-white/90">
+            <h3 className="text-xl font-semibold mb-2">Preferences required for Filtered Mode</h3>
+            <p className="text-white/70 mb-4">
+              To watch with filters, please disable at least one category in your profile.
+              After saving your preferences, refresh this page.
+            </p>
+            <div className="flex items-center justify-center gap-2">
+              <Button variant="secondary" onClick={() => window.history.back()}>Go back</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* video — render only when url exists */}
+      {videoUrl && (
+        <video
+          key={(censorMode ? "c" : "o") + ":" + videoUrl}
+          ref={videoRef}
+          src={videoUrl}
+          crossOrigin="anonymous"
+          className="absolute inset-0 w-full h-full object-contain bg-black"
+          controls={false}
+          playsInline
+          preload="metadata"
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget;
+            const d = isFinite(v.duration) && v.duration ? v.duration : 0;
+            if (d) setDurationSec(d);
+          }}
+          controlsList="nodownload noplaybackrate nofullscreen"
+          onPlay={() => {
+            setIsPlaying(true);
+            scheduleHide();
+          }}
+          onPause={() => {
+            setIsPlaying(false);
+            setShowChrome(true);
+            clearHideTimer();
+          }}
+          onClick={() => {
+            const v = videoRef.current; if (!v) return;
+            v.paused ? v.play() : v.pause();
+          }}
+          onError={() => {
+            toast.error("Video file failed to load.");
+          }}
+        />
+      )}
 
       {/* timeline */}
       <div
@@ -558,6 +607,7 @@ export default function Player() {
               variant="ghost"
               onClick={onPlayClick}
               className="w-12 h-12 md:w-12 md:h-12"
+              disabled={!videoUrl}
             >
               {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6" />}
             </Button>
@@ -575,6 +625,7 @@ export default function Player() {
                 }}
                 max={100}
                 className="w-28"
+                disabled={!videoUrl}
               />
               <Button
                 size="icon"
@@ -585,6 +636,7 @@ export default function Player() {
                   setMuted(newMuted); v.muted = newMuted;
                   bumpActivity();
                 }}
+                disabled={!videoUrl}
               >
                 {muted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
               </Button>
@@ -596,7 +648,7 @@ export default function Player() {
           </div>
 
           <div className="flex items-center gap-3">
-            <Button size="icon" variant="ghost" onClick={goFullscreen}>
+            <Button size="icon" variant="ghost" onClick={goFullscreen} disabled={!videoUrl}>
               <Maximize className="w-5 h-5" />
             </Button>
           </div>
