@@ -106,3 +106,7 @@ data/outputs/*.jsonl
 *.tar
 *.gz
 *.7z
+
+# ignore runtime outputs and large binaries
+runtime/
+*.bin

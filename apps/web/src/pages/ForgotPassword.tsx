@@ -28,7 +28,7 @@ export default function ForgotPasswordPage() {
       fd.append("email", email.trim());
       fd.append("new_password", newPw);
 
-      const API_BASE = import.meta.env.VITE_API_URL; // read from env
+      const API_BASE = import.meta.env.VITE_API_BASE; // read from env
       const res = await axios.post(`${API_BASE}/auth/reset-password`, fd, {
         headers: {},            // Content-Type will be set automatically for FormData
         validateStatus: () => true, // let us handle non-2xx manually

@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import io
+import os
+from datetime import timedelta
+from urllib.parse import urlparse, urlsplit, urlunsplit
+
+from minio import Minio
+
+# Varsayılan bucket (DB’de yoksa/gelmezse)
+MINIO_DEFAULT_BUCKET = os.getenv("S3_BUCKET", "videos")
+
+
+def _endpoint_host(ep: str) -> str:
+    """
+    MinIO client endpoint için host:port döndür (path kabul edilmez).
+    ep: http(s)://host:port[/optional-path] → "host:port"
+    """
+    u = urlparse(ep)
+    host = u.netloc or u.path
+    # netloc'a ek path kaçmışsa ayıkla
+    return host.split("/")[0]
+
+
+def build_minio() -> Minio:
+    """
+    Internal MinIO client (server-side). S3_ENDPOINT kullanır.
+    """
+    ep = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    ak = os.getenv("S3_ACCESS_KEY", "minio")
+    sk = os.getenv("S3_SECRET_KEY", "minio12345")
+    secure = ep.startswith("https://")
+    return Minio(_endpoint_host(ep), access_key=ak, secret_key=sk, secure=secure)
+
+
+def build_public_minio() -> Minio:
+    """
+    Presigned URL üretmek için public endpoint.
+    Önce PUBLIC_S3_ENDPOINT, yoksa S3_ENDPOINT.
+    """
+    ep = os.getenv("PUBLIC_S3_ENDPOINT") or os.getenv("S3_ENDPOINT", "http://minio:9000")
+    ak = os.getenv("S3_ACCESS_KEY", "minio")
+    sk = os.getenv("S3_SECRET_KEY", "minio12345")
+    secure = ep.startswith("https://")
+    return Minio(_endpoint_host(ep), access_key=ak, secret_key=sk, secure=secure)
+
+
+def ensure_bucket(bucket: str) -> None:
+    """Bucket yoksa oluştur (idempotent)."""
+    cli = build_minio()
+    try:
+        cli.make_bucket(bucket)
+    except Exception:
+        # Zaten var / yetki yok vs. → sessiz geç
+        pass
+
+
+def put_file(
+    bucket: str,
+    object_name: str | None = None,
+    *,
+    file_path: str | None = None,   # tercih edilen
+    content_type: str | None = None,
+    key: str | None = None,         # eski isimle uyum
+    data=None,                      # bytes / file-like
+) -> None:
+    """
+    Objeyi MinIO'ya yükle. file_path veya data (bytes/file-like) kabul eder.
+    utils/minio_utils.py'nin beklediği imza ile uyumlu.
+    """
+    obj = object_name or key
+    if not obj:
+        raise ValueError("put_file: object_name/key required")
+
+    ct = content_type or "application/octet-stream"
+    cli = build_minio()
+
+    # bucket sağlama
+    try:
+        cli.make_bucket(bucket)
+    except Exception:
+        pass
+
+    # 1) Dosyadan yükle
+    if file_path:
+        import os as _os
+        size = _os.path.getsize(file_path)
+        with open(file_path, "rb") as f:
+            cli.put_object(bucket, obj, data=f, length=size, content_type=ct)
+        return
+
+    # 2) Bytes/bytearray
+    if isinstance(data, (bytes, bytearray)):
+        bio = io.BytesIO(data)
+        cli.put_object(bucket, obj, data=bio, length=len(data), content_type=ct)
+        return
+
+    # 3) File-like
+    if hasattr(data, "read"):
+        try:
+            pos = data.tell()
+            data.seek(0, os.SEEK_END)
+            size = data.tell()
+            data.seek(pos, os.SEEK_SET)
+        except Exception:
+            size = -1
+
+        if size is not None and size >= 0:
+            cli.put_object(bucket, obj, data=data, length=size, content_type=ct)
+        else:
+            buf = data.read()
+            bio = io.BytesIO(buf)
+            cli.put_object(bucket, obj, data=bio, length=len(buf), content_type=ct)
+        return
+
+    raise TypeError("put_file: provide file_path or data (bytes/file-like)")
+
+
+def get_file(bucket: str, key: str) -> bytes:
+    """Objeyi bytes olarak indir."""
+    cli = build_minio()
+    resp = cli.get_object(bucket, key)
+    try:
+        return resp.read()
+    finally:
+        resp.close()
+        resp.release_conn()
+
+
+def presigned_get(bucket: str, key: str, expires: int = 3600) -> str:
+    """
+    GET için presigned URL üretir. Eğer PUBLIC_S3_PUBLIC_BASE tanımlıysa,
+    imza ve path korunarak host rewrite yapılır.
+    """
+    cli = build_public_minio()
+    url = cli.get_presigned_url("GET", bucket, key, expires=timedelta(seconds=expires))
+
+    public_base = os.getenv("PUBLIC_S3_PUBLIC_BASE") or ""
+    if public_base:
+        pu = urlsplit(public_base)
+        if pu.netloc:
+            su = urlsplit(url)
+            url = urlunsplit((
+                pu.scheme or su.scheme,
+                pu.netloc or pu.path or su.netloc,
+                su.path,
+                su.query,
+                su.fragment,
+            ))
+    return url

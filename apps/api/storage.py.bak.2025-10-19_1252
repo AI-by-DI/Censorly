@@ -1,0 +1,33 @@
+from __future__ import annotations
+
+import io
+import os
+from datetime import timedelta
+from urllib.parse import urlparse, urlsplit, urlunsplit
+
+from minio import Minio
+import urllib3
+
+# Varsayılan bucket (DB’de yoksa/gelmezse)
+MINIO_DEFAULT_BUCKET = os.getenv("S3_BUCKET", "videos")
+
+
+def _endpoint_host(ep: str) -> str:
+    """
+    MinIO client endpoint için host:port döndür (path kabul edilmez).
+    ep: http(s)://host:port[/optional-path] → "host:port"
+    """
+    u = urlparse(ep)
+    host = u.netloc or u.path
+    # netloc'a ek path kaçmışsa ayıkla
+    return host.split("/")[0]
+
+
+def build_minio() -> Minio:
+    ep = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    ak = os.getenv("S3_ACCESS_KEY", "minio")
+    sk = os.getenv("S3_SECRET_KEY", "minio12345")
+    region = os.getenv("S3_REGION", "us-east-1")
+    secure = ep.startswith("https://")
+    host = (urlparse(ep).netloc or urlparse(ep).path).split("/")[0]
+    return _minio_with_timeout(host, ak, sk, secure, region)

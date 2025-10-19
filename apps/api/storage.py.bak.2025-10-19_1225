@@ -1,0 +1,134 @@
+# apps/api/storage.py
+from __future__ import annotations
+import os
+import os.path
+from typing import Optional, Union
+from datetime import timedelta
+
+import urllib3
+from urllib3.util import Timeout, Retry
+from minio import Minio
+from urllib.parse import urlparse
+
+# ==== ENV ====
+# İç ağdaki MinIO endpoint (compose içi erişim)
+S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
+
+# Dışarı servis ederken kullanılacak public host için öncelik:
+# 1) MINIO_PUBLIC_ENDPOINT
+# 2) PUBLIC_S3_ENDPOINT (eski değişken)
+# 3) yoksa dev default (http://localhost:9000)
+MINIO_PUBLIC_ENDPOINT = (
+    os.getenv("MINIO_PUBLIC_ENDPOINT")
+    or os.getenv("PUBLIC_S3_ENDPOINT")
+    or "http://localhost:9000"
+)
+
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
+S3_USE_SSL    = os.getenv("S3_USE_SSL", "false").lower() == "true"
+S3_REGION     = os.getenv("S3_REGION", os.getenv("MINIO_REGION", "us-east-1"))
+
+# Geri uyumluluk için default bucket ismi (bazı yerler MINIO_DEFAULT_BUCKET okuyor)
+MINIO_DEFAULT_BUCKET = os.getenv("S3_BUCKET", os.getenv("MINIO_DEFAULT_BUCKET", "videos"))
+
+
+# ==== Internal helpers ====
+def _mk_http_client(read_timeout_seconds: int = 900) -> urllib3.PoolManager:
+    return urllib3.PoolManager(
+        timeout=Timeout(connect=5, read=read_timeout_seconds),
+        retries=Retry(total=5, backoff_factor=0.5, raise_on_redirect=True, raise_on_status=False),
+    )
+
+def _strip_scheme(url: str) -> str:
+    return url.replace("http://", "").replace("https://", "")
+
+
+# ==== Clients ====
+def build_minio() -> Minio:
+    """
+    İç ağdaki (compose) MinIO için client.
+    """
+    endpoint = _strip_scheme(S3_ENDPOINT)
+    return Minio(
+        endpoint,
+        access_key=S3_ACCESS_KEY,
+        secret_key=S3_SECRET_KEY,
+        secure=S3_USE_SSL,
+        http_client=_mk_http_client(),
+        region=S3_REGION,
+    )
+
+def build_public_minio() -> "Minio":
+    import os
+    from minio import Minio
+    from urllib.parse import urlparse
+    endpoint = os.getenv("PUBLIC_S3_ENDPOINT") or os.getenv("S3_ENDPOINT", "http://minio:9000")
+    ak = os.getenv("S3_ACCESS_KEY", "minio")
+    sk = os.getenv("S3_SECRET_KEY", "minio12345")
+    u = urlparse(endpoint)
+    # MinIO endpoint path kabul etmez
+    host = u.netloc or u.path  # "host:port"
+    secure = u.scheme == "https"
+    return Minio(host, access_key=ak, secret_key=sk, secure=secure)
+def presigned_get(bucket: str, key: str, expires: int = 3600) -> str:
+    """
+    Return a presigned GET URL and, if PUBLIC_S3_PUBLIC_BASE is set,
+    rewrite scheme+host (ve port) bu base'e çevrilir, path+query korunur.
+    """
+    from datetime import timedelta
+    cli = build_public_minio()
+    url = cli.get_presigned_url("GET", bucket, key, expires=timedelta(seconds=expires))
+
+    import os
+    public_base = (os.getenv("PUBLIC_S3_PUBLIC_BASE") or "").strip()
+    if public_base:
+        try:
+            from urllib.parse import urlparse, urlunparse
+            pr = urlparse(url)               # örn: http://minio:9000/videos/..?..
+            pb = urlparse(public_base)       # örn: https://censorly.site:9443
+            # path ve query orijinalden; scheme+netloc public base'den
+            url = urlunparse((pb.scheme, pb.netloc, pr.path, "", pr.query, ""))
+        except Exception:
+            # rewrite düşerse orijinali bırak
+            pass
+    return url
+
+
+def build_presign_minio() -> "Minio":
+    """Presigned URL üretirken public host:port ile imza atmak için client."""
+    import os
+    from urllib.parse import urlparse
+    from minio import Minio
+    public_base = os.getenv("PUBLIC_S3_PUBLIC_BASE", "")
+    if not public_base:
+        # geri düş: PUBLIC_S3_ENDPOINT (ama bu durumda dışarıya doğrulama tutmayabilir)
+        public_base = os.getenv("PUBLIC_S3_ENDPOINT", "http://minio:9000")
+    u = urlparse(public_base)
+    scheme = u.scheme or "http"
+    host = u.netloc or u.path   # netloc boşsa path'te olabilir
+    secure = scheme.lower() == "https"
+    ak = os.getenv("S3_ACCESS_KEY", "minio")
+    sk = os.getenv("S3_SECRET_KEY", "minio12345")
+    # DİKKAT: Minio endpoint'e path veremeyiz, sadece host:port olmalı
+    return Minio(host, access_key=ak, secret_key=sk, secure=secure)
+
+
+# --- compatibility helper for utils/minio_utils imports ---
+def ensure_bucket(bucket: str) -> None:
+    """
+    Ensure S3/MinIO bucket exists. Safe to call repeatedly.
+    Kept for backward-compat so modules can
+    `from apps.api.storage import ensure_bucket`.
+    """
+    try:
+        cli = build_public_minio()
+        try:
+            if not cli.bucket_exists(bucket):
+                cli.make_bucket(bucket)
+        except Exception:
+            # Already exists or race — ignore
+            pass
+    except Exception:
+        # Don’t block app start just because ensure failed.
+        pass

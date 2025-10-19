@@ -1,0 +1,3 @@
+blood	0.150
+violence	0.300
+default	0.300

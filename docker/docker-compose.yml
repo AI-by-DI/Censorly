@@ -11,7 +11,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 || exit 0"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -86,7 +86,7 @@ services:
       - "8000:8000"
     volumes:
       - ..:/app # kodu mount et (hot-reload)
-    command: uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000
+    command: uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000 --root-path /api --proxy-headers
     restart: unless-stopped
 
   web:
@@ -103,7 +103,7 @@ services:
       - /app/node_modules
     command: sh -c "npm install && npm run dev -- --host"
     environment:
-      - VITE_API_URL=${VITE_API_URL}
+      - VITE_API_BASE=${VITE_API_BASE}
     restart: unless-stopped
 
   worker:

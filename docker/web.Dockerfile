@@ -11,8 +11,8 @@
     COPY apps/web/ .
     # (İstersen .env.production dosyan varsa Vite otomatik okur)
     # Build-time API adresi geçirmek için ARG/ENV:
-    ARG VITE_API_URL
-    ENV VITE_API_URL=${VITE_API_URL}
+    ARG VITE_API_BASE
+    ENV VITE_API_BASE=${VITE_API_BASE}
     RUN npm run build
     
     # --- Runtime stage (Nginx) ------------------------------------------

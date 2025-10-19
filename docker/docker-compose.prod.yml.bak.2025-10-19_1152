@@ -34,9 +34,6 @@ services:
     restart: unless-stopped
 
   minio:
-    ports:
-      - "9100:9000"
-      - "9101:9001"
     image: minio/minio:latest
     container_name: censorly_minio
     command: server /data --console-address ":9101"

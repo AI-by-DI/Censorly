@@ -32,7 +32,7 @@ const VideoDetail = () => {
   useEffect(() => {
     const fetchVideo = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/videos/${id}`);
+        const res = await fetch(`${API_BASE}/videos/${id}`);
         if (!res.ok) throw new Error("Video not found");
         const data = await res.json();
         setVideo(data);

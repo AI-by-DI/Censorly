@@ -1,0 +1,8 @@
+Clown	0.100
+Snake	0.100
+Spider	0.100
+alcohol	0.250
+blood	0.150
+obscene	0.150
+violence	0.300
+default	0.300

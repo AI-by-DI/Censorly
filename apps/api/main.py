@@ -1,21 +1,18 @@
 # apps/api/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from os import getenv
 
 from .routers import auth, preferences, uploads, analyses, videos, redactions
 
-app = FastAPI(title="Censorly API")
+app = FastAPI(docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None, title="Censorly API")
 
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",         # local dev
-    "http://127.0.0.1:5173",         # local dev alternatif
-    "http://194.146.50.83:8101",     # prod web (nginx)
-]
+ALLOWED_ORIGINS = [o.strip() for o in getenv("CORS_ALLOW_ORIGINS","https://censorly.site").split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,    # gerekirse geçici olarak ["*"] yapabilirsin
-    allow_credentials=False,          # cookie kullanmıyoruz; Bearer header var
+    allow_credentials=(getenv("CORS_ALLOW_CREDENTIALS","true").lower()=="true"),          # cookie kullanmıyoruz; Bearer header var
     allow_methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
     allow_headers=["*"],              # Authorization, Content-Type vs. hepsi geçsin
     max_age=600,

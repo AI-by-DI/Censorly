@@ -1,0 +1,3 @@
+Clown	0.500
+blood	0.160
+default	0.300
