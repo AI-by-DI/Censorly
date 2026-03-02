@@ -121,7 +121,7 @@ def post_json(url: str, payload: Dict[str, Any], token: Optional[str] = None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
     r.raise_for_status()
     return r.json()
 
@@ -171,13 +171,13 @@ def run(
     _fallback_per_label = {"violence": 0.4, "blood": 0.15, "alcohol": 0.25, "phobic": 0.10,"obscene": 0.30,}
 
     # 3) Opsiyonel JSONL dosyası
-    if out_jsonl_path:
+    jsonl_fp = None
+    out_path = None
+    if out_jsonl_path:  # sadece kullanıcı istediyse yaz
         out_path = pathlib.Path(out_jsonl_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        out_path = OUT_DIR / f"inference_{run_id}.jsonl"
-    jsonl_fp = open(out_path, "w", encoding="utf-8")
-    print(f"[i] Writing detections to: {out_path}")
+        jsonl_fp = open(out_path, "w", encoding="utf-8")
+        print(f"[i] Writing detections to: {out_path}")
 
     # 4) API varsa START’ı bildir
     if post_url and job_id:
@@ -190,10 +190,12 @@ def run(
     n_frames = 0
     n_dets_total = 0
     buffer: List[Dict[str, Any]] = []
+    jsonl_lines: List[str] = []
 
     try:
         for ts_ms, frame in iter_frames_with_timestamps(input_path, stride_ms=stride_ms):
             frame_events: List[Dict[str, Any]] = []
+            
 
             for det in detectors:
                 preds = det.infer_one(frame)
@@ -222,8 +224,16 @@ def run(
                     frame_events.append(entry)
 
             # JSONL’e **filtrelenmişleri** yaz
-            for e in frame_events:
-                jsonl_fp.write(json.dumps(e, ensure_ascii=False) + "\n")
+            # JSONL buffered write
+            if jsonl_fp:
+                jsonl_lines.extend(
+                    json.dumps(e, ensure_ascii=False) + "\n"
+                    for e in frame_events
+                )
+
+                if len(jsonl_lines) >= 1000:
+                    jsonl_fp.writelines(jsonl_lines)
+                    jsonl_lines.clear()
 
             # API buffer’ına ekle (sadece geçerli etiketleri)
             valid_events = [e for e in frame_events if e["label"] in ALLOWED_LABELS]
@@ -263,8 +273,13 @@ def run(
             except Exception as e:
                 print(f"[warn] job finish bildirimi başarısız: {e}")
 
+        if jsonl_fp and jsonl_lines:
+            jsonl_fp.writelines(jsonl_lines)
+            jsonl_lines.clear()        
+
         print(f"[✓] Done. frames={n_frames}, detections_kept={n_dets_total}")
-        print(f"[→] Preview: tail -n 5 {out_path}")
+        if out_path:
+            print(f"[→] Preview: tail -n 5 {out_path}")
 
     except Exception as e:
         # hata durumunda job’u failed yap

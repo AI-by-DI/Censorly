@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_API_BASE: string;
+  readonly VITE_API_URL: string;
   // burada başka .env değişkenlerin varsa onları da tanımla
 }
 
